@@ -40,14 +40,52 @@ function formatUptime(seconds: number): string {
   return `${hours}s ${mins}d`;
 }
 
+type TabType = 'projects' | 'system' | 'traffic';
+
+function getTabFromPath(): TabType {
+  if (typeof window === 'undefined') return 'projects';
+  const path = window.location.pathname.toLowerCase();
+  if (path.includes('sistem') || path.includes('system')) return 'system';
+  if (path.includes('trafik') || path.includes('traffic')) return 'traffic';
+  return 'projects';
+}
+
+function getPathForTab(tab: TabType): string {
+  switch (tab) {
+    case 'system':
+      return '/sistem';
+    case 'traffic':
+      return '/trafik';
+    case 'projects':
+    default:
+      return '/kontroller';
+  }
+}
+
 export function App() {
-  const [activeTab, setActiveTab] = useState<'projects' | 'system' | 'traffic'>('projects');
+  const [activeTab, setActiveTab] = useState<TabType>(getTabFromPath);
   const [projects, setProjects] = useState<Project[]>([]);
   const [system, setSystem] = useState<SystemStats | null>(null);
   const [traffic, setTraffic] = useState<TrafficSummary | null>(null);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [toasts, setToasts] = useState<ActionToast[]>([]);
+
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+    const targetPath = getPathForTab(tab);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ tab }, '', targetPath);
+    }
+  };
+
+  useEffect(() => {
+    const onPopState = () => {
+      setActiveTab(getTabFromPath());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Modals
   const [selectedLogProject, setSelectedLogProject] = useState<Project | null>(null);
@@ -194,7 +232,7 @@ export function App() {
           <div className="flex p-1 bg-slate-900/80 border border-slate-800 rounded-2xl">
             {/* Module 1: Projects & Control */}
             <button
-              onClick={() => setActiveTab('projects')}
+              onClick={() => handleTabChange('projects')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
                 activeTab === 'projects'
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm'
@@ -207,7 +245,7 @@ export function App() {
 
             {/* Module 2: System & Hardware */}
             <button
-              onClick={() => setActiveTab('system')}
+              onClick={() => handleTabChange('system')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
                 activeTab === 'system'
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm'
@@ -220,7 +258,7 @@ export function App() {
 
             {/* Module 3: Traffic & Visitors */}
             <button
-              onClick={() => setActiveTab('traffic')}
+              onClick={() => handleTabChange('traffic')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
                 activeTab === 'traffic'
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm'
