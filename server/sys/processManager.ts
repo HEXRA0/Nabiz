@@ -290,9 +290,12 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
             } else if (port === 4173 || procName.toLowerCase().includes('odak')) {
               cleanName = 'odak';
               directory = 'C:/Projects/odak';
-            } else if (port === 80 || port === 443 || procName.toLowerCase().includes('caddy')) {
+            } else if (port === 8080 || procName.toLowerCase().includes('thedemir')) {
               cleanName = 'thedemir';
               directory = 'C:/Projects/thedemir';
+            } else if (port === 80 || port === 443 || procName.toLowerCase().includes('caddy')) {
+              // Master reverse proxy (Caddy) - keep running in background, not a user toggle project
+              continue;
             }
 
             result.push({
@@ -377,8 +380,10 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
         isSelf = true;
       } else if (portInfo.port === 4173 || command.includes('odak')) {
         projectName = 'odak';
-      } else if (portInfo.port === 80 || command.includes('thedemir')) {
+      } else if (portInfo.port === 8080 || command.includes('thedemir')) {
         projectName = 'thedemir';
+      } else if (portInfo.port === 80 || portInfo.port === 443 || command.includes('caddy')) {
+        continue;
       }
 
       result.push({
