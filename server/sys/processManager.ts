@@ -495,8 +495,60 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
 export async function executeProjectAction(project: ProjectProcess, action: 'start' | 'stop' | 'restart'): Promise<{ success: boolean; message: string }> {
   try {
     const isWin = os.platform() === 'win32';
+    const projName = project.name.toLowerCase();
 
-    // 1. PM2 action
+    // 1. Core / Specific named projects handling
+    if (projName === 'odak') {
+      if (action === 'stop' || action === 'restart') {
+        if (isWin) {
+          await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
+        } else if (project.pid) {
+          await execAsync(`kill -9 ${project.pid}`).catch(() => {});
+        }
+      }
+      if (action === 'start' || action === 'restart') {
+        if (isWin) {
+          const odakCmd = `Start-Process -FilePath 'cmd.exe' -ArgumentList '/c cd /d C:\\Projects\\odak && set \"PORT=4173\" && set \"HOST=0.0.0.0\" && \"C:\\Program Files\\nodejs\\node.exe\" server/index.mjs' -WindowStyle Hidden`;
+          await execAsync(`powershell -Command "${odakCmd}"`);
+        } else {
+          exec('node server/index.mjs', { cwd: project.directory || '/Projects/odak', env: { ...process.env, PORT: '4173', HOST: '0.0.0.0' } });
+        }
+      }
+      return { success: true, message: `Odak projesi ${action} işlemi tamamlandı.` };
+    }
+
+    if (projName === 'thedemir') {
+      if (action === 'stop' || action === 'restart') {
+        if (isWin) {
+          await execAsync('powershell -Command "Stop-Service Caddy -ErrorAction SilentlyContinue; Stop-Process -Name caddy -Force -ErrorAction SilentlyContinue"').catch(() => {});
+        }
+      }
+      if (action === 'start' || action === 'restart') {
+        if (isWin) {
+          await execAsync('powershell -Command "Start-Service Caddy -ErrorAction SilentlyContinue; if (!(Get-Process caddy -ErrorAction SilentlyContinue)) { Start-Process \'C:\\Caddy\\caddy.exe\' -ArgumentList \'run --config C:\\Caddy\\Caddyfile\' -WindowStyle Hidden }"');
+        }
+      }
+      return { success: true, message: `Thedemir (Caddy) ${action} işlemi tamamlandı.` };
+    }
+
+    if (projName === 'nabiz' || projName === 'nabız') {
+      if (action === 'stop') {
+        if (isWin) {
+          await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
+        } else if (project.pid) {
+          await execAsync(`kill -9 ${project.pid}`).catch(() => {});
+        }
+        return { success: true, message: 'Nabız servisi durduruldu.' };
+      }
+      if (action === 'start' || action === 'restart') {
+        if (isWin) {
+          await execAsync('schtasks /run /tn "NabizService"');
+        }
+        return { success: true, message: 'Nabız servisi başlatıldı.' };
+      }
+    }
+
+    // 2. PM2 action
     if (project.type === 'pm2') {
       const pmId = project.id.replace('pm2-', '');
       const pm2Cmd = isWin ? `pm2 ${action} ${pmId}` : `pm2 ${action} ${pmId} || npx pm2 ${action} ${pmId}`;
@@ -504,14 +556,14 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
       return { success: true, message: `PM2 projesi (${project.name}) ${action} işlemi tamamlandı.` };
     }
 
-    // 2. Docker action
+    // 3. Docker action
     if (project.type === 'docker') {
       const containerName = project.name;
       await execAsync(`docker ${action} ${containerName}`);
       return { success: true, message: `Docker konteyneri (${containerName}) ${action} işlemi tamamlandı.` };
     }
 
-    // 3. Custom Commands
+    // 4. Custom Commands
     if (action === 'start' && project.startCommand) {
       const cwd = project.directory || process.cwd();
       exec(project.startCommand, { cwd });
@@ -528,16 +580,19 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
       return { success: true, message: `Durdurma komutu çalıştırıldı.` };
     }
 
-    // 4. PID Direct Signal Stop / Restart
-    if (project.pid && action === 'stop') {
-      const killCmd = isWin ? `taskkill /F /PID ${project.pid}` : `kill -15 ${project.pid} 2>/dev/null || kill -9 ${project.pid}`;
-      await execAsync(killCmd);
-      return { success: true, message: `PID ${project.pid} durduruldu.` };
-    }
-    if (project.pid && action === 'restart') {
-      const restartCmd = isWin ? `taskkill /F /PID ${project.pid}` : `kill -HUP ${project.pid} 2>/dev/null || kill -15 ${project.pid}`;
-      await execAsync(restartCmd);
-      return { success: true, message: `PID ${project.pid} yeniden başlatıldı.` };
+    // 5. Port / PID Direct Stop
+    if (action === 'stop') {
+      if (project.pid) {
+        const killCmd = isWin ? `taskkill /F /T /PID ${project.pid}` : `kill -15 ${project.pid} 2>/dev/null || kill -9 ${project.pid}`;
+        await execAsync(killCmd);
+        return { success: true, message: `PID ${project.pid} durduruldu.` };
+      }
+      if (project.port) {
+        if (isWin) {
+          await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort ${project.port} -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
+        }
+        return { success: true, message: `Port ${project.port} üzerindeki işlem durduruldu.` };
+      }
     }
 
     return { success: false, message: 'Bu proje için başlatma/durdurma komutu tanımlı değil.' };
