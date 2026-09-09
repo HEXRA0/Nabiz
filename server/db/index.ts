@@ -151,6 +151,29 @@ export function initDatabase() {
       value TEXT NOT NULL,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS traffic_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT UNIQUE,
+      project TEXT NOT NULL,
+      host TEXT,
+      method TEXT,
+      path TEXT,
+      status INTEGER,
+      duration_ms REAL,
+      size_bytes INTEGER,
+      client_ip TEXT,
+      country TEXT,
+      user_agent TEXT,
+      is_internal INTEGER DEFAULT 0,
+      category TEXT DEFAULT 'page',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_traffic_logs_created ON traffic_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_traffic_logs_project_created ON traffic_logs(project, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_traffic_logs_internal_created ON traffic_logs(is_internal, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_traffic_logs_path ON traffic_logs(path);
   `);
 
   // Default Status Page if not exists

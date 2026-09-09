@@ -147,6 +147,28 @@ export interface TrafficSummary {
   recentLogs: TrafficLogEntry[];
 }
 
+export interface HistoricalTrafficReport {
+  range: string;
+  rangeLabel: string;
+  project: string;
+  totalRequests: number;
+  visitorRequests: number;
+  uniqueIps: number;
+  totalBytes: number;
+  totalBytesFormatted: string;
+  avgDurationMs: number;
+  statusCodes: {
+    '2xx': number;
+    '3xx': number;
+    '4xx': number;
+    '5xx': number;
+  };
+  chartSeries: { label: string; visitorRequests: number; totalRequests: number; errors: number; avgLatency: number }[];
+  topPaths: { path: string; count: number; avgDurationMs: number; category: TrafficCategory }[];
+  topCountries: { code: string; count: number }[];
+  recentLogs: TrafficLogEntry[];
+}
+
 export const api = {
   projects: {
     list: (): Promise<Project[]> => request('/projects'),
@@ -163,6 +185,8 @@ export const api = {
   },
   traffic: {
     summary: (): Promise<TrafficSummary> => request('/traffic/summary'),
+    history: (range: string = 'today', project: string = 'all'): Promise<HistoricalTrafficReport> =>
+      request(`/traffic/history?range=${range}&project=${project}`),
     logs: (project?: string): Promise<TrafficLogEntry[]> => request(`/traffic/logs${project ? `?project=${project}` : ''}`),
   },
 };

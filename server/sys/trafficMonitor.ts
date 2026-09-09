@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import util from 'util';
+import { db } from '../db/index.js';
 
 const execAsync = util.promisify(exec);
 
@@ -65,6 +66,28 @@ export interface TrafficSummary {
   recentLogs: TrafficLogEntry[];
 }
 
+export interface HistoricalTrafficReport {
+  range: string;
+  rangeLabel: string;
+  project: string;
+  totalRequests: number;
+  visitorRequests: number;
+  uniqueIps: number;
+  totalBytes: number;
+  totalBytesFormatted: string;
+  avgDurationMs: number;
+  statusCodes: {
+    '2xx': number;
+    '3xx': number;
+    '4xx': number;
+    '5xx': number;
+  };
+  chartSeries: { label: string; visitorRequests: number; totalRequests: number; errors: number; avgLatency: number }[];
+  topPaths: { path: string; count: number; avgDurationMs: number; category: TrafficCategory }[];
+  topCountries: { code: string; count: number }[];
+  recentLogs: TrafficLogEntry[];
+}
+
 // Log directories to search
 const LOG_DIRS = [
   'C:\\Caddy\\logs',
@@ -107,6 +130,7 @@ let activeConnections: Record<string, number> = {
 };
 
 function formatBytes(bytes: number): string {
+  if (!bytes || isNaN(bytes)) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -116,6 +140,26 @@ function formatBytes(bytes: number): string {
 function getMinuteKey(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Prepared statements for SQLite persistence
+let insertLogStmt: any = null;
+
+function getInsertStmt() {
+  if (!insertLogStmt) {
+    insertLogStmt = db.prepare(`
+      INSERT OR IGNORE INTO traffic_logs (
+        request_id, project, host, method, path, status,
+        duration_ms, size_bytes, client_ip, country, user_agent,
+        is_internal, category, created_at
+      ) VALUES (
+        @request_id, @project, @host, @method, @path, @status,
+        @duration_ms, @size_bytes, @client_ip, @country, @user_agent,
+        @is_internal, @category, @created_at
+      )
+    `);
+  }
+  return insertLogStmt;
 }
 
 // Detect if a path is Nabiz internal polling or static asset or real page
@@ -223,15 +267,14 @@ function parseCaddyLine(line: string, fallbackProject?: string): TrafficLogEntry
   }
 }
 
-// Ingest a batch of log entries into memory & aggregates
+// Ingest a batch of log entries into memory AND persist to SQLite
 export function ingestLogs(entries: TrafficLogEntry[]) {
   if (!entries || entries.length === 0) return;
 
+  // 1. Update In-Memory Ring Buffer & Minute Buckets
   for (const entry of entries) {
-    // Add to recent logs
     recentLogs.unshift(entry);
 
-    // Update minute bucket
     const date = new Date(entry.timestamp);
     const mKey = getMinuteKey(date);
     let bucket = minuteBuckets.get(mKey);
@@ -265,6 +308,35 @@ export function ingestLogs(entries: TrafficLogEntry[]) {
     if (bucket.timestamp < twoHoursAgo) {
       minuteBuckets.delete(key);
     }
+  }
+
+  // 2. Persist batch to SQLite database
+  try {
+    const stmt = getInsertStmt();
+    const insertTransaction = db.transaction((items: TrafficLogEntry[]) => {
+      for (const item of items) {
+        const isoDate = new Date(item.timestamp).toISOString().replace('T', ' ').substring(0, 19);
+        stmt.run({
+          request_id: item.id,
+          project: item.project,
+          host: item.host,
+          method: item.method,
+          path: item.path,
+          status: item.status,
+          duration_ms: item.durationMs,
+          size_bytes: item.sizeBytes,
+          client_ip: item.clientIp,
+          country: item.country,
+          user_agent: item.userAgent || '',
+          is_internal: item.isInternal ? 1 : 0,
+          category: item.category,
+          created_at: isoDate,
+        });
+      }
+    });
+    insertTransaction(entries);
+  } catch (err) {
+    console.error('Failed to persist traffic logs to SQLite:', err);
   }
 }
 
@@ -349,13 +421,13 @@ async function pollActiveConnections() {
       counts[proj] = matches ? matches.length : 0;
     }
 
-    // Total active visitor connections on user-facing apps (odak, thedemir) + nabiz
+    // Total active visitor connections on user-facing apps (odak, thedemir)
     counts.total = counts.odak + counts.thedemir;
     activeConnections = counts;
   } catch {}
 }
 
-// Compute summary and domain-level metrics
+// Compute live real-time summary for WebSocket
 export function getTrafficSummary(): TrafficSummary {
   const now = Date.now();
   const oneHourAgo = now - 3600 * 1000;
@@ -411,7 +483,6 @@ export function getTrafficSummary(): TrafficSummary {
     else if (log.status >= 400 && log.status < 500) dObj.statusCodes['4xx']++;
     else if (log.status >= 500) dObj.statusCodes['5xx']++;
 
-    // Record path (skip internal polling from top paths unless no real paths exist)
     if (!log.isInternal || dObj.pathCounts.size < 3) {
       const pStat = dObj.pathCounts.get(log.path) || { count: 0, totalDuration: 0, category: log.category };
       pStat.count++;
@@ -419,7 +490,6 @@ export function getTrafficSummary(): TrafficSummary {
       dObj.pathCounts.set(log.path, pStat);
     }
 
-    // Country count for visitors
     if (!log.isInternal) {
       const cCount = dObj.countryCounts.get(log.country) || 0;
       dObj.countryCounts.set(log.country, cCount + 1);
@@ -507,6 +577,173 @@ export function getTrafficSummary(): TrafficSummary {
   };
 }
 
+// Query historical SQL reporting from SQLite
+export function getHistoricalTraffic(range: string = 'today', project: string = 'all'): HistoricalTrafficReport {
+  let timeCondition = "created_at >= datetime('now', 'start of day', 'localtime')";
+  let groupFormat = "%H:00";
+  let rangeLabel = 'Bugün';
+
+  if (range === 'yesterday') {
+    timeCondition = "created_at >= datetime('now', '-1 day', 'start of day', 'localtime') AND created_at < datetime('now', 'start of day', 'localtime')";
+    groupFormat = "%H:00";
+    rangeLabel = 'Dün';
+  } else if (range === '7d') {
+    timeCondition = "created_at >= datetime('now', '-7 days', 'localtime')";
+    groupFormat = "%Y-%m-%d";
+    rangeLabel = 'Son 7 Gün';
+  } else if (range === '30d') {
+    timeCondition = "created_at >= datetime('now', '-30 days', 'localtime')";
+    groupFormat = "%Y-%m-%d";
+    rangeLabel = 'Son 30 Gün';
+  }
+
+  const projectCondition = project !== 'all' ? `AND project = '${project.replace(/'/g, '')}'` : '';
+
+  // 1. Overall Aggregates
+  const summaryRow = db.prepare(`
+    SELECT
+      COUNT(*) AS totalRequests,
+      COUNT(CASE WHEN is_internal = 0 THEN 1 END) AS visitorRequests,
+      COUNT(DISTINCT CASE WHEN is_internal = 0 THEN client_ip END) AS uniqueIps,
+      COALESCE(SUM(size_bytes), 0) AS totalBytes,
+      COALESCE(AVG(duration_ms), 0) AS avgDurationMs,
+      COUNT(CASE WHEN status >= 200 AND status < 300 THEN 1 END) AS status2xx,
+      COUNT(CASE WHEN status >= 300 AND status < 400 THEN 1 END) AS status3xx,
+      COUNT(CASE WHEN status >= 400 AND status < 500 THEN 1 END) AS status4xx,
+      COUNT(CASE WHEN status >= 500 THEN 1 END) AS status5xx
+    FROM traffic_logs
+    WHERE ${timeCondition} ${projectCondition}
+  `).get() as any;
+
+  // 2. Timeline Chart Series
+  const seriesRows = db.prepare(`
+    SELECT
+      strftime('${groupFormat}', created_at) AS label,
+      COUNT(CASE WHEN is_internal = 0 THEN 1 END) AS visitorRequests,
+      COUNT(*) AS totalRequests,
+      COUNT(CASE WHEN status >= 400 THEN 1 END) AS errors,
+      COALESCE(AVG(duration_ms), 0) AS avgLatency
+    FROM traffic_logs
+    WHERE ${timeCondition} ${projectCondition}
+    GROUP BY strftime('${groupFormat}', created_at)
+    ORDER BY label ASC
+  `).all() as any[];
+
+  // 3. Top Paths
+  const topPathRows = db.prepare(`
+    SELECT
+      path,
+      category,
+      COUNT(*) AS count,
+      COALESCE(AVG(duration_ms), 0) AS avgDurationMs
+    FROM traffic_logs
+    WHERE ${timeCondition} ${projectCondition} AND is_internal = 0
+    GROUP BY path
+    ORDER BY count DESC
+    LIMIT 10
+  `).all() as any[];
+
+  // 4. Top Countries
+  const topCountryRows = db.prepare(`
+    SELECT
+      country AS code,
+      COUNT(*) AS count
+    FROM traffic_logs
+    WHERE ${timeCondition} ${projectCondition} AND is_internal = 0 AND country IS NOT NULL AND country != ''
+    GROUP BY country
+    ORDER BY count DESC
+    LIMIT 6
+  `).all() as any[];
+
+  // 5. Recent Logs
+  const recentLogRows = db.prepare(`
+    SELECT
+      request_id AS id,
+      project,
+      host,
+      method,
+      path,
+      status,
+      duration_ms AS durationMs,
+      size_bytes AS sizeBytes,
+      client_ip AS clientIp,
+      country,
+      user_agent AS userAgent,
+      is_internal AS isInternal,
+      category,
+      created_at
+    FROM traffic_logs
+    WHERE ${timeCondition} ${projectCondition}
+    ORDER BY id DESC
+    LIMIT 60
+  `).all() as any[];
+
+  const formattedRecentLogs: TrafficLogEntry[] = recentLogRows.map((r) => {
+    const d = new Date(r.created_at);
+    return {
+      id: r.id,
+      timestamp: d.getTime(),
+      timeFormatted: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`,
+      project: r.project,
+      host: r.host,
+      method: r.method,
+      uri: r.path,
+      path: r.path,
+      status: r.status,
+      durationMs: Math.round((r.durationMs || 0) * 10) / 10,
+      sizeBytes: r.sizeBytes || 0,
+      clientIp: r.clientIp,
+      country: r.country,
+      userAgent: r.userAgent,
+      isInternal: Boolean(r.isInternal),
+      category: r.category as TrafficCategory,
+    };
+  });
+
+  return {
+    range,
+    rangeLabel,
+    project,
+    totalRequests: summaryRow.totalRequests || 0,
+    visitorRequests: summaryRow.visitorRequests || 0,
+    uniqueIps: summaryRow.uniqueIps || 0,
+    totalBytes: summaryRow.totalBytes || 0,
+    totalBytesFormatted: formatBytes(summaryRow.totalBytes || 0),
+    avgDurationMs: Math.round((summaryRow.avgDurationMs || 0) * 10) / 10,
+    statusCodes: {
+      '2xx': summaryRow.status2xx || 0,
+      '3xx': summaryRow.status3xx || 0,
+      '4xx': summaryRow.status4xx || 0,
+      '5xx': summaryRow.status5xx || 0,
+    },
+    chartSeries: seriesRows.map((s) => ({
+      label: s.label,
+      visitorRequests: s.visitorRequests,
+      totalRequests: s.totalRequests,
+      errors: s.errors,
+      avgLatency: Math.round((s.avgLatency || 0) * 10) / 10,
+    })),
+    topPaths: topPathRows.map((p) => ({
+      path: p.path,
+      count: p.count,
+      avgDurationMs: Math.round((p.avgDurationMs || 0) * 10) / 10,
+      category: p.category as TrafficCategory,
+    })),
+    topCountries: topCountryRows.map((c) => ({
+      code: c.code,
+      count: c.count,
+    })),
+    recentLogs: formattedRecentLogs,
+  };
+}
+
+// Clean old logs older than 60 days to keep SQLite light and fast
+export function pruneOldTrafficLogs() {
+  try {
+    db.prepare(`DELETE FROM traffic_logs WHERE created_at < datetime('now', '-60 days')`).run();
+  } catch {}
+}
+
 // Background scheduler
 let monitorInterval: NodeJS.Timeout | null = null;
 
@@ -520,6 +757,7 @@ export function startTrafficMonitoring() {
 
   pollLogFiles();
   pollActiveConnections();
+  pruneOldTrafficLogs();
 
   if (!monitorInterval) {
     monitorInterval = setInterval(async () => {

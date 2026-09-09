@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getTrafficSummary } from '../sys/trafficMonitor.js';
+import { getTrafficSummary, getHistoricalTraffic } from '../sys/trafficMonitor.js';
 
 const router = Router();
 
@@ -10,6 +10,18 @@ router.get('/summary', (req, res) => {
     res.json(summary);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Trafik verileri alınamadı' });
+  }
+});
+
+// GET /api/traffic/history - historical reporting from SQLite (today, yesterday, 7d, 30d)
+router.get('/history', (req, res) => {
+  try {
+    const range = (req.query.range as string) || 'today';
+    const project = (req.query.project as string) || 'all';
+    const report = getHistoricalTraffic(range, project);
+    res.json(report);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Geçmiş trafik verileri alınamadı' });
   }
 });
 
