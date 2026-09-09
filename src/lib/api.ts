@@ -87,6 +87,60 @@ async function request(endpoint: string, options: RequestInit = {}) {
   return data;
 }
 
+export interface TrafficLogEntry {
+  id: string;
+  timestamp: number;
+  timeFormatted: string;
+  project: string;
+  host: string;
+  method: string;
+  uri: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  sizeBytes: number;
+  clientIp: string;
+  country: string;
+  userAgent?: string;
+}
+
+export interface DomainStats {
+  project: string;
+  host: string;
+  activeConnections: number;
+  totalRequests: number;
+  requestsLastHour: number;
+  requestsPerSec: number;
+  totalBytes: number;
+  avgDurationMs: number;
+  statusCodes: {
+    '2xx': number;
+    '3xx': number;
+    '4xx': number;
+    '5xx': number;
+  };
+  topPaths: { path: string; count: number; avgDurationMs: number }[];
+  topCountries: { code: string; count: number }[];
+}
+
+export interface TrafficSummary {
+  totalActiveConnections: number;
+  totalRequests: number;
+  requestsPerSec: number;
+  totalBytes: number;
+  totalBytesFormatted: string;
+  avgDurationMs: number;
+  statusCodes: {
+    '2xx': number;
+    '3xx': number;
+    '4xx': number;
+    '5xx': number;
+  };
+  historySeries: { timestamp: number; time: string; requests: number; errors: number; avgLatency: number }[];
+  domains: Record<string, DomainStats>;
+  recentLogs: TrafficLogEntry[];
+}
+
 export const api = {
   projects: {
     list: (): Promise<Project[]> => request('/projects'),
@@ -101,4 +155,9 @@ export const api = {
   system: {
     stats: (): Promise<SystemStats> => request('/system/stats'),
   },
+  traffic: {
+    summary: (): Promise<TrafficSummary> => request('/traffic/summary'),
+    logs: (project?: string): Promise<TrafficLogEntry[]> => request(`/traffic/logs${project ? `?project=${project}` : ''}`),
+  },
 };
+

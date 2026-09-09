@@ -1,4 +1,3 @@
-import React, { useState, useEffect, useCallback } from 'react';
 import {
   Activity,
   HardDrive,
@@ -12,12 +11,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  X
+  X,
+  Globe,
 } from 'lucide-react';
-import { api, Project, SystemStats } from './lib/api.js';
+import { api, Project, SystemStats, TrafficSummary } from './lib/api.js';
 import { useWebSocket } from './lib/ws.js';
 import { ProjectCard } from './components/ProjectCard.js';
 import { SystemModule } from './components/SystemModule.js';
+import { TrafficModule } from './components/TrafficModule.js';
 import { LogTerminalModal } from './components/LogTerminalModal.js';
 import { AddProjectModal } from './components/AddProjectModal.js';
 import { ActivityLogsModal } from './components/ActivityLogsModal.js';
@@ -39,9 +40,10 @@ function formatUptime(seconds: number): string {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<'projects' | 'system'>('projects');
+  const [activeTab, setActiveTab] = useState<'projects' | 'system' | 'traffic'>('projects');
   const [projects, setProjects] = useState<Project[]>([]);
   const [system, setSystem] = useState<SystemStats | null>(null);
+  const [traffic, setTraffic] = useState<TrafficSummary | null>(null);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [toasts, setToasts] = useState<ActionToast[]>([]);
@@ -77,12 +79,14 @@ export function App() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [sysData, projData] = await Promise.all([
+      const [sysData, projData, trafData] = await Promise.all([
         api.system.stats(),
         api.projects.list(),
+        api.traffic.summary().catch(() => null),
       ]);
       setSystem(sysData);
       setProjects(projData);
+      if (trafData) setTraffic(trafData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -96,12 +100,13 @@ export function App() {
     return () => clearInterval(timer);
   }, [fetchData]);
 
-  // Real-time WebSocket listener (streams metrics every 2.5s)
+  // Real-time WebSocket listener (streams metrics every 2s)
   useWebSocket(
     useCallback((event: string, data: any) => {
       if (event === 'system_metrics' && data) {
         if (data.system) setSystem(data.system);
         if (data.projects) setProjects(data.projects);
+        if (data.traffic) setTraffic(data.traffic);
       }
     }, [])
   );
@@ -178,7 +183,7 @@ export function App() {
           </div>
         </div>
 
-        {/* 2 Main Modules Switcher */}
+        {/* 3 Main Modules Switcher */}
         <div className="flex items-center gap-3">
           <div className="hidden lg:flex items-center gap-1.5 text-xs text-emerald-400 font-medium bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full">
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -210,6 +215,19 @@ export function App() {
             >
               <Server className="h-3.5 w-3.5" />
               <span>Sistem & Donanım</span>
+            </button>
+
+            {/* Module 3: Traffic & Visitors */}
+            <button
+              onClick={() => setActiveTab('traffic')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
+                activeTab === 'traffic'
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Globe className="h-3.5 w-3.5" />
+              <span>Trafik & Ziyaretçiler</span>
             </button>
           </div>
         </div>
@@ -297,6 +315,11 @@ export function App() {
         {/* Module 2: System & Hardware Observability */}
         {activeTab === 'system' && (
           <SystemModule system={system} />
+        )}
+
+        {/* Module 3: Traffic & Visitor Observability */}
+        {activeTab === 'traffic' && (
+          <TrafficModule traffic={traffic} />
         )}
       </main>
 

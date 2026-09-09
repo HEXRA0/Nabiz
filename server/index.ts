@@ -12,6 +12,8 @@ import { getSystemStats } from './sys/systemStats.js';
 
 import projectsRoutes from './routes/projects.js';
 import systemRoutes from './routes/system.js';
+import trafficRoutes from './routes/traffic.js';
+import { startTrafficMonitoring, getTrafficSummary } from './sys/trafficMonitor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,11 +21,12 @@ const __dirname = path.dirname(__filename);
 // Initialize DB schema & tables
 initDatabase();
 initProjectTables();
+startTrafficMonitoring();
 
 const app = express();
 const server = http.createServer(app);
 
-// WebSocket server for streaming real-time RAM/CPU updates to the UI
+// WebSocket server for streaming real-time RAM/CPU & Traffic updates to the UI
 const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set<WebSocket>();
 
@@ -33,26 +36,28 @@ wss.on('connection', async (ws) => {
   // Send initial data immediately
   try {
     const [system, projects] = await Promise.all([getSystemStats(), getAllProjects()]);
-    ws.send(JSON.stringify({ event: 'system_metrics', data: { system, projects } }));
+    const traffic = getTrafficSummary();
+    ws.send(JSON.stringify({ event: 'system_metrics', data: { system, projects, traffic } }));
   } catch (e) {}
 
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
 });
 
-// Periodic broadcaster: every 2.5 seconds pushes fresh RAM & CPU stats
+// Periodic broadcaster: every 2 seconds pushes fresh RAM, CPU & Traffic stats
 setInterval(async () => {
   if (clients.size === 0) return;
   try {
     const [system, projects] = await Promise.all([getSystemStats(), getAllProjects()]);
-    const message = JSON.stringify({ event: 'system_metrics', data: { system, projects } });
+    const traffic = getTrafficSummary();
+    const message = JSON.stringify({ event: 'system_metrics', data: { system, projects, traffic } });
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
       }
     }
   } catch (e) {}
-}, 2500);
+}, 2000);
 
 // Express Middleware
 app.use(cors());
@@ -62,6 +67,7 @@ app.use(express.urlencoded({ extended: true }));
 // API Routes
 app.use('/api/projects', projectsRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/traffic', trafficRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
