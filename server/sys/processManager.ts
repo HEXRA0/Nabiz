@@ -573,14 +573,16 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
     if (projName === 'odak') {
       if (action === 'stop' || action === 'restart') {
         if (isWin) {
-          await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
+          await execAsync(`powershell -Command "schtasks /end /tn 'OdakService' -ErrorAction SilentlyContinue; $p = (Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
         } else if (project.pid) {
           await execAsync(`kill -9 ${project.pid}`).catch(() => {});
         }
       }
       if (action === 'start' || action === 'restart') {
         if (isWin) {
-          exec('C:\\Projects\\odak\\start.bat', { cwd: 'C:\\Projects\\odak' });
+          await execAsync('powershell -Command "schtasks /run /tn \'OdakService\'"').catch(() => {
+            exec('C:\\Projects\\odak\\start.bat', { cwd: 'C:\\Projects\\odak' });
+          });
         } else {
           exec('node server/index.mjs', { cwd: project.directory || '/Projects/odak', env: { ...process.env, PORT: '4173', HOST: '0.0.0.0' } });
         }
