@@ -6,7 +6,7 @@ export interface Project {
   type: 'pm2' | 'docker' | 'port' | 'process';
   pid?: number;
   port?: number | string;
-  status: 'online' | 'stopped' | 'errored' | 'high_memory';
+  status: 'online' | 'stopped' | 'errored';
   memoryBytes: number;
   memoryMb: number;
   memoryPercent: number; // % of total server RAM
@@ -47,17 +47,11 @@ export interface SystemStats {
     totalFormatted: string;
     usedFormatted: string;
   };
-}
-
-export interface AlertSettings {
-  telegram: {
-    botToken: string;
-    chatId: string;
-    enabled: boolean;
-  };
-  discord: {
-    webhookUrl: string;
-    enabled: boolean;
+  network: {
+    inBytesPerSec: number;
+    outBytesPerSec: number;
+    inFormatted: string;
+    outFormatted: string;
   };
 }
 
@@ -83,17 +77,11 @@ export const api = {
     add: (data: { name: string; type?: string; target: string; directory?: string; restart_command?: string }) =>
       request('/projects', { method: 'POST', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/projects/${id}`, { method: 'DELETE' }),
-    action: (id: string, action: 'restart' | 'stop' | 'start') =>
+    action: (id: string, action: 'start' | 'stop' | 'restart') =>
       request(`/projects/${id}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
     logs: (id: string): Promise<{ logs: string }> => request(`/projects/${id}/logs`),
   },
   system: {
     stats: (): Promise<SystemStats> => request('/system/stats'),
-  },
-  alerts: {
-    get: (): Promise<AlertSettings> => request('/alerts'),
-    save: (data: AlertSettings) => request('/alerts', { method: 'POST', body: JSON.stringify(data) }),
-    test: (type: 'telegram' | 'discord', config: any) =>
-      request('/alerts/test', { method: 'POST', body: JSON.stringify({ type, config }) }),
   },
 };

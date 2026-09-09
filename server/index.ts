@@ -12,7 +12,6 @@ import { getSystemStats } from './sys/systemStats.js';
 
 import projectsRoutes from './routes/projects.js';
 import systemRoutes from './routes/system.js';
-import alertsRoutes from './routes/alerts.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,7 +62,6 @@ app.use(express.urlencoded({ extended: true }));
 // API Routes
 app.use('/api/projects', projectsRoutes);
 app.use('/api/system', systemRoutes);
-app.use('/api/alerts', alertsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

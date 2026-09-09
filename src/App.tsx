@@ -7,19 +7,10 @@ import {
   Layers,
   Search,
   Plus,
-  Bell,
   RefreshCw,
-  Send,
-  Save,
-  CheckCircle2,
-  AlertTriangle,
-  Radio,
-  Clock,
-  Terminal,
-  ArrowDownLeft,
-  ArrowUpRight
+  Clock
 } from 'lucide-react';
-import { api, Project, SystemStats, AlertSettings } from './lib/api.js';
+import { api, Project, SystemStats } from './lib/api.js';
 import { useWebSocket } from './lib/ws.js';
 import { ProjectCard } from './components/ProjectCard.js';
 import { SystemModule } from './components/SystemModule.js';
@@ -35,7 +26,7 @@ function formatUptime(seconds: number): string {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<'projects' | 'system' | 'alerts'>('projects');
+  const [activeTab, setActiveTab] = useState<'projects' | 'system'>('projects');
   const [projects, setProjects] = useState<Project[]>([]);
   const [system, setSystem] = useState<SystemStats | null>(null);
   const [search, setSearch] = useState('');
@@ -44,16 +35,6 @@ export function App() {
   // Modals
   const [selectedLogProject, setSelectedLogProject] = useState<Project | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-
-  // Alerts
-  const [alerts, setAlerts] = useState<AlertSettings>({
-    telegram: { botToken: '', chatId: '', enabled: false },
-    discord: { webhookUrl: '', enabled: false },
-  });
-  const [savingAlerts, setSavingAlerts] = useState(false);
-  const [alertSuccess, setAlertSuccess] = useState(false);
-  const [testingType, setTestingType] = useState<'telegram' | 'discord' | null>(null);
-  const [testResult, setTestResult] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -70,19 +51,11 @@ export function App() {
     }
   }, []);
 
-  const fetchAlerts = useCallback(async () => {
-    try {
-      const data = await api.alerts.get();
-      setAlerts(data);
-    } catch (e) {}
-  }, []);
-
   useEffect(() => {
     fetchData();
-    fetchAlerts();
     const timer = setInterval(fetchData, 4000);
     return () => clearInterval(timer);
-  }, [fetchData, fetchAlerts]);
+  }, [fetchData]);
 
   // Real-time WebSocket listener (streams metrics every 2.5s)
   useWebSocket(
@@ -103,38 +76,6 @@ export function App() {
     if (!confirm('Bu projeyi listeden kaldırmak istediğinize emin misiniz?')) return;
     await api.projects.delete(id);
     await fetchData();
-  };
-
-  const handleSaveAlerts = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSavingAlerts(true);
-    setAlertSuccess(false);
-    setTestResult(null);
-
-    try {
-      await api.alerts.save(alerts);
-      setAlertSuccess(true);
-      setTimeout(() => setAlertSuccess(false), 3000);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSavingAlerts(false);
-    }
-  };
-
-  const handleTestAlert = async (type: 'telegram' | 'discord') => {
-    setTestingType(type);
-    setTestResult(null);
-
-    try {
-      const config = type === 'telegram' ? alerts.telegram : alerts.discord;
-      const res = await api.alerts.test(type, config);
-      setTestResult({ msg: res.message, ok: true });
-    } catch (err: any) {
-      setTestResult({ msg: err.message, ok: false });
-    } finally {
-      setTestingType(null);
-    }
   };
 
   // Filtered projects
@@ -174,7 +115,7 @@ export function App() {
           </div>
         </div>
 
-        {/* Modular Tabs Switcher */}
+        {/* 2 Main Modules Switcher */}
         <div className="flex items-center gap-3">
           <div className="hidden lg:flex items-center gap-1.5 text-xs text-emerald-400 font-medium bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full">
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -206,19 +147,6 @@ export function App() {
             >
               <Server className="h-3.5 w-3.5" />
               <span>Sistem & Donanım</span>
-            </button>
-
-            {/* Module 3: Alerts */}
-            <button
-              onClick={() => setActiveTab('alerts')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
-                activeTab === 'alerts'
-                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Bell className="h-3.5 w-3.5" />
-              <span>Alarmlar</span>
             </button>
           </div>
         </div>
@@ -298,180 +226,6 @@ export function App() {
         {/* Module 2: System & Hardware Observability */}
         {activeTab === 'system' && (
           <SystemModule system={system} />
-        )}
-
-        {/* Module 3: Alerts & Notification Settings */}
-        {activeTab === 'alerts' && (
-          <div className="space-y-6 animate-in fade-in duration-150 max-w-2xl">
-            <div>
-              <h2 className="text-xl font-bold text-white tracking-tight">Yüksek RAM & Çökme Alarmları</h2>
-              <p className="text-xs text-slate-400">
-                Projelerinizden biri çöktüğünde veya aşırı RAM tüketmeye başladığında anında Telegram veya Discord bildirimi alın
-              </p>
-            </div>
-
-            {testResult && (
-              <div
-                className={`p-3.5 rounded-2xl border text-xs flex items-center gap-2.5 ${
-                  testResult.ok ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                }`}
-              >
-                {testResult.ok ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertTriangle className="h-4 w-4 shrink-0" />}
-                <span>{testResult.msg}</span>
-              </div>
-            )}
-
-            {alertSuccess && (
-              <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-emerald-400 text-xs flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>Bildirim ayarlarınız başarıyla kaydedildi!</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveAlerts} className="space-y-4">
-              {/* Telegram Card */}
-              <div className="glass-panel p-6 rounded-3xl border border-slate-800 space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-xl">✈️</span>
-                    <div>
-                      <h3 className="text-sm font-bold text-white">Telegram Bildirimleri</h3>
-                      <p className="text-[11px] text-slate-400">Telegram botu aracılığıyla anlık çökme uyarıları</p>
-                    </div>
-                  </div>
-
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={alerts.telegram.enabled}
-                      onChange={(e) =>
-                        setAlerts({
-                          ...alerts,
-                          telegram: { ...alerts.telegram, enabled: e.target.checked },
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1.5">Bot Token</label>
-                    <input
-                      type="password"
-                      placeholder="123456789:AAHk..."
-                      value={alerts.telegram.botToken}
-                      onChange={(e) =>
-                        setAlerts({
-                          ...alerts,
-                          telegram: { ...alerts.telegram, botToken: e.target.value },
-                        })
-                      }
-                      className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1.5">Chat ID / Grup ID</label>
-                    <input
-                      type="text"
-                      placeholder="-100123456789"
-                      value={alerts.telegram.chatId}
-                      onChange={(e) =>
-                        setAlerts({
-                          ...alerts,
-                          telegram: { ...alerts.telegram, chatId: e.target.value },
-                        })
-                      }
-                      className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={() => handleTestAlert('telegram')}
-                    disabled={testingType === 'telegram'}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-1.5 rounded-xl border border-emerald-500/30 transition disabled:opacity-50"
-                  >
-                    <Send className={`h-3 w-3 ${testingType === 'telegram' ? 'animate-spin' : ''}`} />
-                    <span>{testingType === 'telegram' ? 'Gönderiliyor...' : 'Telegram Test Mesajı Gönder'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Discord Card */}
-              <div className="glass-panel p-6 rounded-3xl border border-slate-800 space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-xl">👾</span>
-                    <div>
-                      <h3 className="text-sm font-bold text-white">Discord Webhook Bildirimleri</h3>
-                      <p className="text-[11px] text-slate-400">Kanal webhook adresinize anlık uyarı kartları</p>
-                    </div>
-                  </div>
-
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={alerts.discord.enabled}
-                      onChange={(e) =>
-                        setAlerts({
-                          ...alerts,
-                          discord: { ...alerts.discord, enabled: e.target.checked },
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1.5">Discord Webhook URL</label>
-                  <input
-                    type="url"
-                    placeholder="https://discord.com/api/webhooks/..."
-                    value={alerts.discord.webhookUrl}
-                    onChange={(e) =>
-                      setAlerts({
-                        ...alerts,
-                        discord: { ...alerts.discord, webhookUrl: e.target.value },
-                      })
-                    }
-                    className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={() => handleTestAlert('discord')}
-                    disabled={testingType === 'discord'}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-1.5 rounded-xl border border-emerald-500/30 transition disabled:opacity-50"
-                  >
-                    <Send className={`h-3 w-3 ${testingType === 'discord' ? 'animate-spin' : ''}`} />
-                    <span>{testingType === 'discord' ? 'Gönderiliyor...' : 'Discord Test Mesajı Gönder'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Save Button */}
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  disabled={savingAlerts}
-                  className="flex items-center gap-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 rounded-xl shadow-lg shadow-emerald-950/40 transition disabled:opacity-50"
-                >
-                  <Save className="h-4 w-4" />
-                  <span>{savingAlerts ? 'Kaydediliyor...' : 'Alarmları Kaydet'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
         )}
       </main>
 
