@@ -74,12 +74,20 @@ export function App() {
   }, []);
 
   const checkUser = async () => {
+    const token = localStorage.getItem('nabiz_token');
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await api.auth.me();
       setUser(res.user);
       const mList = await api.monitors.list().catch(() => []);
       setMonitorsList(mList);
     } catch (e) {
+      localStorage.removeItem('nabiz_token');
       setUser(null);
     } finally {
       setLoading(false);

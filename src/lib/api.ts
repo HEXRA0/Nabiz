@@ -114,9 +114,8 @@ async function fetchWithAuth(endpoint: string, options: RequestInit = {}) {
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    if (res.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/status')) {
+    if (res.status === 401) {
       removeToken();
-      window.location.href = '/login';
     }
     throw new Error(data.error || 'İşlem sırasında bir hata oluştu');
   }
