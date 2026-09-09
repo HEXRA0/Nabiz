@@ -32,16 +32,29 @@ export interface SystemStats {
     totalFormatted: string;
     usedFormatted: string;
   };
+  network: {
+    inBytesPerSec: number;
+    outBytesPerSec: number;
+    inFormatted: string;
+    outFormatted: string;
+  };
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  if (bytes < 1024) return bytes.toFixed(0) + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 }
 
-let lastCpuInfo: { idle: number; total: number } | null = null;
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
+}
 
+// CPU usage calculation
+let lastCpuInfo: { idle: number; total: number } | null = null;
 function getCpuUsage(): Promise<number> {
   return new Promise((resolve) => {
     const cpus = os.cpus();
@@ -75,12 +88,12 @@ function getCpuUsage(): Promise<number> {
   });
 }
 
-async function getDiskUsage(): Promise<{ totalBytes: number; usedBytes: number; freeBytes: number; usedPercent: number }> {
+// Disk Usage
+async function getDiskUsage() {
   try {
     const { stdout } = await execAsync('df -k /');
     const lines = stdout.trim().split('\n');
     if (lines.length >= 2) {
-      // Columns: Filesystem 1024-blocks Used Available Capacity ...
       const parts = lines[1].replace(/\s+/g, ' ').split(' ');
       const totalK = parseInt(parts[1], 10) || 0;
       const usedK = parseInt(parts[2], 10) || 0;
@@ -98,6 +111,52 @@ async function getDiskUsage(): Promise<{ totalBytes: number; usedBytes: number; 
   return { totalBytes: 0, usedBytes: 0, freeBytes: 0, usedPercent: 0 };
 }
 
+// Network Traffic Speed Tracking
+let lastNetSample: { inBytes: number; outBytes: number; time: number } | null = null;
+let currentNetSpeed = { inBytesPerSec: 0, outBytesPerSec: 0 };
+
+async function sampleNetworkSpeed() {
+  try {
+    if (os.platform() === 'darwin') {
+      const { stdout } = await execAsync('netstat -ibn | grep -e "<Link#" | head -n 1');
+      const parts = stdout.trim().replace(/\s+/g, ' ').split(' ');
+      const inBytes = parseInt(parts[6], 10) || 0;
+      const outBytes = parseInt(parts[9], 10) || 0;
+      const now = Date.now();
+
+      if (lastNetSample && now > lastNetSample.time) {
+        const sec = (now - lastNetSample.time) / 1000;
+        const inDiff = Math.max(0, inBytes - lastNetSample.inBytes);
+        const outDiff = Math.max(0, outBytes - lastNetSample.outBytes);
+        currentNetSpeed = {
+          inBytesPerSec: inDiff / sec,
+          outBytesPerSec: outDiff / sec,
+        };
+      }
+      lastNetSample = { inBytes, outBytes, time: now };
+    } else if (os.platform() === 'linux') {
+      const { stdout } = await execAsync("cat /proc/net/dev | grep -v 'lo:' | grep ':' | head -n 1");
+      const parts = stdout.trim().split(':')[1].trim().replace(/\s+/g, ' ').split(' ');
+      const inBytes = parseInt(parts[0], 10) || 0;
+      const outBytes = parseInt(parts[8], 10) || 0;
+      const now = Date.now();
+
+      if (lastNetSample && now > lastNetSample.time) {
+        const sec = (now - lastNetSample.time) / 1000;
+        currentNetSpeed = {
+          inBytesPerSec: Math.max(0, inBytes - lastNetSample.inBytes) / sec,
+          outBytesPerSec: Math.max(0, outBytes - lastNetSample.outBytes) / sec,
+        };
+      }
+      lastNetSample = { inBytes, outBytes, time: now };
+    }
+  } catch (e) {}
+}
+
+// Poll network periodically
+setInterval(sampleNetworkSpeed, 2000);
+sampleNetworkSpeed();
+
 export async function getSystemStats(): Promise<SystemStats> {
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
@@ -114,7 +173,7 @@ export async function getSystemStats(): Promise<SystemStats> {
     uptimeSeconds: Math.floor(os.uptime()),
     cpu: {
       cores: os.cpus().length,
-      model: os.cpus()[0]?.model || 'Unknown CPU',
+      model: os.cpus()[0]?.model || 'CPU',
       usagePercent: cpuUsagePercent,
       loadAvg: os.loadavg().map((v) => parseFloat(v.toFixed(2))),
     },
@@ -131,6 +190,12 @@ export async function getSystemStats(): Promise<SystemStats> {
       ...disk,
       totalFormatted: formatBytes(disk.totalBytes),
       usedFormatted: formatBytes(disk.usedBytes),
+    },
+    network: {
+      inBytesPerSec: Math.round(currentNetSpeed.inBytesPerSec),
+      outBytesPerSec: Math.round(currentNetSpeed.outBytesPerSec),
+      inFormatted: formatSpeed(currentNetSpeed.inBytesPerSec),
+      outFormatted: formatSpeed(currentNetSpeed.outBytesPerSec),
     },
   };
 }
