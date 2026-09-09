@@ -16,17 +16,14 @@ export function startScheduler() {
   isRunning = true;
   console.log('[Scheduler] Uptime monitoring scheduler started.');
 
-  // Run main tick loop every 3 seconds
   intervalTimer = setInterval(async () => {
     try {
       await tickMonitors();
-      await tickHeartbeats();
     } catch (e) {
       console.error('[Scheduler] Error in scheduler tick:', e);
     }
   }, 3000);
 
-  // Run immediate first check
   tickMonitors().catch(console.error);
 }
 
@@ -49,8 +46,6 @@ export async function runManualCheck(monitorId: number): Promise<CheckResult | n
 }
 
 async function tickMonitors() {
-  const now = new Date();
-  // Get active (not paused) monitors due for check
   const monitors = db.prepare(`
     SELECT * FROM monitors
     WHERE is_paused = 0
@@ -141,7 +136,6 @@ async function recordCheckResult(monitor: any, result: CheckResult) {
 
     broadcastAlert({
       event: newStatus === 'up' ? 'up' : 'down',
-      title: `${monitor.name} ${newStatus === 'up' ? 'Tekrar Yayında' : 'Erişilemez Durumda'}`,
       name: monitor.name,
       url: monitor.url,
       message: result.message || (newStatus === 'up' ? 'Servis normal çalışmaya başladı' : 'Servise ulaşılamıyor'),
@@ -157,53 +151,5 @@ async function recordCheckResult(monitor: any, result: CheckResult) {
       newStatus,
       timestamp: nowIso,
     });
-  }
-
-  // SSL Expiry warning check (e.g., <= 7 days)
-  if (result.sslDaysRemaining !== undefined && result.sslDaysRemaining > 0 && result.sslDaysRemaining <= 7) {
-    // Only alert once per day
-    console.warn(`[SSL Alert] Certificate for ${monitor.name} expires in ${result.sslDaysRemaining} days!`);
-  }
-}
-
-async function tickHeartbeats() {
-  const nowIso = new Date().toISOString();
-  const heartbeats = db.prepare(`
-    SELECT * FROM heartbeats WHERE is_paused = 0
-  `).all() as any[];
-
-  for (const hb of heartbeats) {
-    if (!hb.last_ping_at) continue;
-
-    const lastPing = new Date(hb.last_ping_at).getTime();
-    const nowTime = Date.now();
-    const thresholdMs = (hb.interval_seconds + hb.grace_period_seconds) * 1000;
-
-    const isOverdue = (nowTime - lastPing) > thresholdMs;
-    const prevStatus = hb.current_status;
-
-    if (isOverdue && prevStatus !== 'down') {
-      db.prepare(`
-        UPDATE heartbeats
-        SET current_status = 'down', consecutive_failures = consecutive_failures + 1, updated_at = ?
-        WHERE id = ?
-      `).run(nowIso, hb.id);
-
-      broadcaster('heartbeat_status_changed', {
-        heartbeatId: hb.id,
-        name: hb.name,
-        prevStatus,
-        newStatus: 'down',
-        timestamp: nowIso,
-      });
-
-      broadcastAlert({
-        event: 'heartbeat_down',
-        title: `Kalp Atışı Kesintisi: ${hb.name}`,
-        name: hb.name,
-        message: `Servisten ${Math.round((nowTime - lastPing) / 1000)} saniyedir beklenen kalp atışı sinyali alınamadı!`,
-        timestamp: nowIso,
-      }).catch(console.error);
-    }
   }
 }
