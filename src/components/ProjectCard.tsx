@@ -15,7 +15,7 @@ import { Project } from '../lib/api.js';
 
 interface ProjectCardProps {
   project: Project;
-  onAction: (id: string, action: 'start' | 'stop' | 'restart') => Promise<void>;
+  onAction: (project: Project, action: 'start' | 'stop' | 'restart') => Promise<void>;
   onOpenLogs: (project: Project) => void;
   onDelete?: (id: string) => Promise<void>;
 }
@@ -38,6 +38,7 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
 }) => {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [showSelfStopWarning, setShowSelfStopWarning] = useState(false);
+  const [statusHint, setStatusHint] = useState<string | null>(null);
 
   const isSelf = project.isSelf || project.name.toLowerCase().includes('nabız') || project.name.toLowerCase().includes('nabiz');
   const isOnline = project.status === 'online';
@@ -52,8 +53,13 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
 
   const performAction = async (action: 'start' | 'stop' | 'restart') => {
     setLoadingAction(action);
+    setStatusHint(action === 'start' ? 'Başlatma komutu gönderildi...' : action === 'stop' ? 'Durdurma komutu gönderildi...' : 'Yeniden başlatılıyor...');
     try {
-      await onAction(project.id, action);
+      await onAction(project, action);
+      setStatusHint(action === 'start' ? 'Başlatıldı, port bekleniyor...' : action === 'stop' ? 'Durduruldu.' : 'Yeniden başlatıldı.');
+      setTimeout(() => setStatusHint(null), 4000);
+    } catch (e: any) {
+      setStatusHint('Hata: ' + (e.message || 'İşlem başarısız'));
     } finally {
       setLoadingAction(null);
       setShowSelfStopWarning(false);
@@ -67,7 +73,11 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
   return (
     <>
       <div className={`glass-panel rounded-3xl border transition-all duration-200 overflow-hidden shadow-xl ${
-        isOnline ? 'border-slate-800/80 hover:border-slate-700/90' : 'border-slate-800/40 opacity-75'
+        loadingAction
+          ? 'border-teal-500/50 shadow-teal-950/20'
+          : isOnline
+          ? 'border-slate-800/80 hover:border-slate-700/90'
+          : 'border-slate-800/40 opacity-80'
       }`}>
         <div className="p-5 space-y-4">
           {/* Header: Status, Name, Port & Power Button */}
@@ -75,8 +85,10 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
             <div className="flex items-start gap-3">
               <div className="mt-1">
                 <div
-                  className={`h-3 w-3 rounded-full shrink-0 ${
-                    isOnline
+                  className={`h-3 w-3 rounded-full shrink-0 transition-all duration-300 ${
+                    loadingAction
+                      ? 'bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.9)] animate-ping'
+                      : isOnline
                       ? 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)] animate-pulse-subtle'
                       : 'bg-rose-500/80'
                   }`}
@@ -111,6 +123,13 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
                     </span>
                   )}
                 </div>
+
+                {statusHint && (
+                  <div className="mt-1.5 text-[11px] font-medium text-amber-300 flex items-center gap-1.5 animate-in fade-in">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    <span>{statusHint}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -120,13 +139,23 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
               disabled={!!loadingAction}
               title={isOnline ? 'Projeyi Kapat (Durdur)' : 'Projeyi Aç (Başlat)'}
               className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition active:scale-95 disabled:opacity-50 ${
-                isOnline
+                loadingAction
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 cursor-wait'
+                  : isOnline
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-rose-500/20 hover:text-rose-400 hover:border-rose-500/30'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-emerald-500/20 hover:text-emerald-400 hover:border-emerald-500/30'
               }`}
             >
-              <Power className={`h-3.5 w-3.5 ${loadingAction ? 'animate-spin' : ''}`} />
-              <span>{isOnline ? 'AÇIK (Kapat)' : 'KAPALI (Aç)'}</span>
+              <Power className={`h-3.5 w-3.5 ${loadingAction ? 'animate-spin text-amber-400' : ''}`} />
+              <span>
+                {loadingAction === 'start'
+                  ? 'Başlatılıyor...'
+                  : loadingAction === 'stop'
+                  ? 'Durduruluyor...'
+                  : isOnline
+                  ? 'AÇIK (Kapat)'
+                  : 'KAPALI (Aç)'}
+              </span>
             </button>
           </div>
 

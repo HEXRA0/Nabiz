@@ -78,7 +78,7 @@ export const api = {
     add: (data: { name: string; type?: string; target: string; directory?: string; restart_command?: string }) =>
       request('/projects', { method: 'POST', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/projects/${id}`, { method: 'DELETE' }),
-    action: (id: string, action: 'start' | 'stop' | 'restart') =>
+    action: (id: string, action: 'start' | 'stop' | 'restart'): Promise<{ success: boolean; message: string }> =>
       request(`/projects/${id}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
     logs: (id: string): Promise<{ logs: string }> => request(`/projects/${id}/logs`),
   },

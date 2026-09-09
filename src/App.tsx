@@ -8,7 +8,11 @@ import {
   Search,
   Plus,
   RefreshCw,
-  Clock
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  X
 } from 'lucide-react';
 import { api, Project, SystemStats } from './lib/api.js';
 import { useWebSocket } from './lib/ws.js';
@@ -16,6 +20,13 @@ import { ProjectCard } from './components/ProjectCard.js';
 import { SystemModule } from './components/SystemModule.js';
 import { LogTerminalModal } from './components/LogTerminalModal.js';
 import { AddProjectModal } from './components/AddProjectModal.js';
+
+interface ActionToast {
+  id: string;
+  projectName: string;
+  type: 'loading' | 'success' | 'error';
+  message: string;
+}
 
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
@@ -31,10 +42,35 @@ export function App() {
   const [system, setSystem] = useState<SystemStats | null>(null);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [toasts, setToasts] = useState<ActionToast[]>([]);
 
   // Modals
   const [selectedLogProject, setSelectedLogProject] = useState<Project | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  const addToast = (toast: Omit<ActionToast, 'id'>) => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { ...toast, id }]);
+    if (toast.type !== 'loading') {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 5000);
+    }
+    return id;
+  };
+
+  const updateToast = (id: string, updates: Partial<ActionToast>) => {
+    setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+    if (updates.type && updates.type !== 'loading') {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 5000);
+    }
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -67,9 +103,33 @@ export function App() {
     }, [])
   );
 
-  const handleAction = async (id: string, action: 'start' | 'stop' | 'restart') => {
-    await api.projects.action(id, action);
-    await fetchData();
+  const handleAction = async (project: Project, action: 'start' | 'stop' | 'restart') => {
+    const actionText = action === 'start' ? 'Başlatılıyor' : action === 'stop' ? 'Durduruluyor' : 'Yeniden Başlatılıyor';
+    const toastId = addToast({
+      projectName: project.name,
+      type: 'loading',
+      message: `${project.name} için ${actionText.toLowerCase()} komutu sunucuya iletildi...`,
+    });
+
+    try {
+      const res = await api.projects.action(project.id, action);
+      updateToast(toastId, {
+        type: res.success ? 'success' : 'error',
+        message: res.message || `${project.name} ${actionText.toLowerCase()} işlemi tamamlandı.`,
+      });
+
+      // Rapidly poll to reflect port status in UI without waiting
+      await fetchData();
+      setTimeout(fetchData, 600);
+      setTimeout(fetchData, 1500);
+      setTimeout(fetchData, 3000);
+    } catch (err: any) {
+      updateToast(toastId, {
+        type: 'error',
+        message: err.message || 'Komut çalıştırılırken bir hata oluştu.',
+      });
+      await fetchData();
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -241,6 +301,55 @@ export function App() {
         onClose={() => setIsAddModalOpen(false)}
         onSuccess={() => fetchData()}
       />
+
+      {/* Floating Action Notifications / Toasts (Bottom Right) */}
+      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto p-4 rounded-2xl shadow-2xl border backdrop-blur-md transition-all duration-300 animate-in slide-in-from-bottom-5 ${
+              toast.type === 'loading'
+                ? 'bg-slate-900/95 border-amber-500/40 text-amber-200'
+                : toast.type === 'success'
+                ? 'bg-slate-900/95 border-emerald-500/40 text-emerald-200'
+                : 'bg-slate-900/95 border-rose-500/40 text-rose-200'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 shrink-0">
+                {toast.type === 'loading' && (
+                  <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                )}
+                {toast.type === 'success' && (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                )}
+                {toast.type === 'error' && (
+                  <AlertCircle className="h-4 w-4 text-rose-400" />
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-white capitalize">{toast.projectName}</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                    {toast.type === 'loading' ? 'İşleniyor' : toast.type === 'success' ? 'Başarılı' : 'Hata'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 mt-1 leading-snug break-words">
+                  {toast.message}
+                </p>
+              </div>
+
+              <button
+                onClick={() => removeToast(toast.id)}
+                className="text-slate-500 hover:text-slate-300 p-1 rounded-lg hover:bg-slate-800 transition -mr-1 -mt-1"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
