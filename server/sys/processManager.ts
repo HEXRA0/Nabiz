@@ -580,8 +580,7 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
       }
       if (action === 'start' || action === 'restart') {
         if (isWin) {
-          const odakCmd = `Start-Process -FilePath 'cmd.exe' -ArgumentList '/c cd /d C:\\Projects\\odak && set \"PORT=4173\" && set \"HOST=0.0.0.0\" && \"C:\\Program Files\\nodejs\\node.exe\" server/index.mjs' -WindowStyle Hidden`;
-          await execAsync(`powershell -Command "${odakCmd}"`);
+          await execAsync(`powershell -Command "Start-Process -FilePath 'C:\\Projects\\odak\\start.bat' -WindowStyle Hidden"`);
         } else {
           exec('node server/index.mjs', { cwd: project.directory || '/Projects/odak', env: { ...process.env, PORT: '4173', HOST: '0.0.0.0' } });
         }
