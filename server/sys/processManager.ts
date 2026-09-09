@@ -580,7 +580,7 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
       }
       if (action === 'start' || action === 'restart') {
         if (isWin) {
-          await execAsync(`powershell -Command "Start-Process -FilePath 'C:\\Projects\\odak\\start.bat' -WindowStyle Hidden"`);
+          exec('C:\\Projects\\odak\\start.bat', { cwd: 'C:\\Projects\\odak' });
         } else {
           exec('node server/index.mjs', { cwd: project.directory || '/Projects/odak', env: { ...process.env, PORT: '4173', HOST: '0.0.0.0' } });
         }
