@@ -50,8 +50,20 @@ export function initProjectTables() {
 // 1. Discover PM2 apps
 async function getPm2Projects(): Promise<ProjectProcess[]> {
   try {
-    const { stdout } = await execAsync('pm2 jlist 2>/dev/null || npx pm2 jlist 2>/dev/null');
-    const list = JSON.parse(stdout.trim());
+    const isWin = os.platform() === 'win32';
+    const pm2Cmd = isWin
+      ? 'pm2 jlist 2>nul || npx pm2 jlist 2>nul || powershell -Command "pm2 jlist"'
+      : 'pm2 jlist 2>/dev/null || npx pm2 jlist 2>/dev/null';
+
+    const { stdout } = await execAsync(pm2Cmd);
+    if (!stdout.trim() || !stdout.includes('[')) return [];
+
+    // Extract json array in case of pm2 banners
+    const jsonStart = stdout.indexOf('[');
+    const jsonEnd = stdout.lastIndexOf(']');
+    if (jsonStart === -1 || jsonEnd === -1) return [];
+
+    const list = JSON.parse(stdout.substring(jsonStart, jsonEnd + 1));
     const totalMem = os.totalmem();
 
     return list.map((app: any) => {
@@ -87,7 +99,7 @@ async function getPm2Projects(): Promise<ProjectProcess[]> {
 // 2. Discover Docker containers
 async function getDockerProjects(): Promise<ProjectProcess[]> {
   try {
-    const { stdout } = await execAsync('docker stats --no-stream --format "{{.ID}}|{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}|{{.PIDs}}" 2>/dev/null');
+    const { stdout } = await execAsync('docker stats --no-stream --format "{{.ID}}|{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}|{{.PIDs}}" 2>/dev/null || docker stats --no-stream --format "{{.ID}}|{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}|{{.PIDs}}" 2>nul');
     if (!stdout.trim()) return [];
 
     const totalMem = os.totalmem();
@@ -98,11 +110,11 @@ async function getDockerProjects(): Promise<ProjectProcess[]> {
       let memoryBytes = 0;
       if (memUsage) {
         const memPart = memUsage.split('/')[0].trim();
-        if (memPart.includes('GiB')) {
+        if (memPart.includes('GiB') || memPart.includes('GB')) {
           memoryBytes = parseFloat(memPart) * 1024 * 1024 * 1024;
-        } else if (memPart.includes('MiB')) {
+        } else if (memPart.includes('MiB') || memPart.includes('MB')) {
           memoryBytes = parseFloat(memPart) * 1024 * 1024;
-        } else if (memPart.includes('kB')) {
+        } else if (memPart.includes('kB') || memPart.includes('KB')) {
           memoryBytes = parseFloat(memPart) * 1024;
         }
       }
@@ -129,13 +141,91 @@ async function getDockerProjects(): Promise<ProjectProcess[]> {
   }
 }
 
-// 3. Discover processes listening on network ports
+// 3. Discover processes listening on network ports (Windows + Linux + macOS)
 async function getListeningPortProjects(): Promise<ProjectProcess[]> {
+  const isWin = os.platform() === 'win32';
+  const totalMem = os.totalmem();
+
+  if (isWin) {
+    try {
+      // Windows implementation: netstat + tasklist
+      const { stdout: netOut } = await execAsync('netstat -ano -p tcp');
+      const lines = netOut.split('\n');
+      const portMap = new Map<number, number>(); // pid -> port
+
+      for (const line of lines) {
+        if (line.includes('LISTENING')) {
+          const parts = line.trim().replace(/\s+/g, ' ').split(' ');
+          if (parts.length >= 5) {
+            const localAddr = parts[1];
+            const port = parseInt(localAddr.split(':').pop() || '0', 10);
+            const pid = parseInt(parts[4], 10);
+            if (pid && port > 0 && !portMap.has(pid)) {
+              portMap.set(pid, port);
+            }
+          }
+        }
+      }
+
+      if (portMap.size === 0) return [];
+
+      const { stdout: taskOut } = await execAsync('tasklist /FO CSV /NH');
+      const taskLines = taskOut.split('\n');
+      const result: ProjectProcess[] = [];
+
+      for (const taskLine of taskLines) {
+        if (!taskLine.trim()) continue;
+        const csvParts = taskLine.trim().split('","').map((s) => s.replace(/"/g, ''));
+        if (csvParts.length >= 5) {
+          const procName = csvParts[0];
+          const pid = parseInt(csvParts[1], 10);
+          const memStr = csvParts[4].replace(/[^\d]/g, ''); // "9.637 K" -> 9637
+          const memKb = parseInt(memStr, 10) || 0;
+
+          if (portMap.has(pid)) {
+            const port = portMap.get(pid)!;
+            const memoryBytes = memKb * 1024;
+            const memoryMb = Math.round((memoryBytes / (1024 * 1024)) * 10) / 10;
+            const memoryPercent = totalMem > 0 ? parseFloat(((memoryBytes / totalMem) * 100).toFixed(1)) : 0;
+
+            let cleanName = procName;
+            if (procName.toLowerCase().includes('node')) {
+              cleanName = `Node Uygulaması (Port ${port})`;
+            } else if (procName.toLowerCase().includes('caddy')) {
+              cleanName = `Caddy Web Sunucusu (Port ${port})`;
+            } else {
+              cleanName = `${procName.replace('.exe', '')} (Port ${port})`;
+            }
+
+            result.push({
+              id: `win-port-${port}-${pid}`,
+              name: cleanName,
+              type: 'port',
+              pid,
+              port,
+              status: 'online',
+              memoryBytes,
+              memoryMb,
+              memoryPercent,
+              cpuPercent: 0,
+              uptimeSeconds: 0,
+              command: procName,
+            });
+          }
+        }
+      }
+
+      return result;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // macOS / Linux implementation
   try {
     const { stdout } = await execAsync('lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null || ss -tulpn 2>/dev/null');
     if (!stdout.trim()) return [];
 
-    const totalMem = os.totalmem();
     const lines = stdout.trim().split('\n');
     const portMap = new Map<number, { port: number; commandName: string }>();
 
@@ -294,10 +384,13 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
 // Actions: Start, Stop, Restart
 export async function executeProjectAction(project: ProjectProcess, action: 'start' | 'stop' | 'restart'): Promise<{ success: boolean; message: string }> {
   try {
+    const isWin = os.platform() === 'win32';
+
     // 1. PM2 action
     if (project.type === 'pm2') {
       const pmId = project.id.replace('pm2-', '');
-      await execAsync(`pm2 ${action} ${pmId} || npx pm2 ${action} ${pmId}`);
+      const pm2Cmd = isWin ? `pm2 ${action} ${pmId}` : `pm2 ${action} ${pmId} || npx pm2 ${action} ${pmId}`;
+      await execAsync(pm2Cmd);
       return { success: true, message: `PM2 projesi (${project.name}) ${action} işlemi tamamlandı.` };
     }
 
@@ -327,11 +420,13 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
 
     // 4. PID Direct Signal Stop / Restart
     if (project.pid && action === 'stop') {
-      await execAsync(`kill -15 ${project.pid} 2>/dev/null || kill -9 ${project.pid}`);
-      return { success: true, message: `PID ${project.pid} başarıyla durduruldu (Kapatıldı).` };
+      const killCmd = isWin ? `taskkill /F /PID ${project.pid}` : `kill -15 ${project.pid} 2>/dev/null || kill -9 ${project.pid}`;
+      await execAsync(killCmd);
+      return { success: true, message: `PID ${project.pid} durduruldu.` };
     }
     if (project.pid && action === 'restart') {
-      await execAsync(`kill -HUP ${project.pid} 2>/dev/null || kill -15 ${project.pid}`);
+      const restartCmd = isWin ? `taskkill /F /PID ${project.pid}` : `kill -HUP ${project.pid} 2>/dev/null || kill -15 ${project.pid}`;
+      await execAsync(restartCmd);
       return { success: true, message: `PID ${project.pid} yeniden başlatıldı.` };
     }
 
@@ -344,16 +439,19 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
 // Log Fetcher
 export async function getProjectLogs(project: ProjectProcess, linesCount: number = 80): Promise<string> {
   try {
+    const isWin = os.platform() === 'win32';
     if (project.type === 'pm2') {
       const pmId = project.id.replace('pm2-', '');
-      const { stdout } = await execAsync(`pm2 logs ${pmId} --lines ${linesCount} --nostream 2>/dev/null || npx pm2 logs ${pmId} --lines ${linesCount} --nostream`);
+      const pm2Cmd = isWin ? `pm2 logs ${pmId} --lines ${linesCount} --nostream` : `pm2 logs ${pmId} --lines ${linesCount} --nostream 2>/dev/null || npx pm2 logs ${pmId} --lines ${linesCount} --nostream`;
+      const { stdout } = await execAsync(pm2Cmd);
       return stdout || 'Log kaydı bulunamadı.';
     } else if (project.type === 'docker') {
       const containerName = project.name;
-      const { stdout, stderr } = await execAsync(`docker logs --tail ${linesCount} ${containerName} 2>/dev/null`);
+      const { stdout, stderr } = await execAsync(`docker logs --tail ${linesCount} ${containerName}`);
       return stdout || stderr || 'Log kaydı bulunamadı.';
     } else if (project.logPath && fs.existsSync(project.logPath)) {
-      const { stdout } = await execAsync(`tail -n ${linesCount} "${project.logPath}"`);
+      const logCmd = isWin ? `powershell -Command "Get-Content -Path '${project.logPath}' -Tail ${linesCount}"` : `tail -n ${linesCount} "${project.logPath}"`;
+      const { stdout } = await execAsync(logCmd);
       return stdout || 'Log dosyası boş.';
     }
 
