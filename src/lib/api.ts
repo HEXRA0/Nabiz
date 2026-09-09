@@ -87,6 +87,8 @@ async function request(endpoint: string, options: RequestInit = {}) {
   return data;
 }
 
+export type TrafficCategory = 'page' | 'api' | 'asset' | 'internal';
+
 export interface TrafficLogEntry {
   id: string;
   timestamp: number;
@@ -102,6 +104,8 @@ export interface TrafficLogEntry {
   clientIp: string;
   country: string;
   userAgent?: string;
+  isInternal: boolean;
+  category: TrafficCategory;
 }
 
 export interface DomainStats {
@@ -109,6 +113,7 @@ export interface DomainStats {
   host: string;
   activeConnections: number;
   totalRequests: number;
+  visitorRequests: number;
   requestsLastHour: number;
   requestsPerSec: number;
   totalBytes: number;
@@ -119,13 +124,14 @@ export interface DomainStats {
     '4xx': number;
     '5xx': number;
   };
-  topPaths: { path: string; count: number; avgDurationMs: number }[];
+  topPaths: { path: string; count: number; avgDurationMs: number; category: TrafficCategory }[];
   topCountries: { code: string; count: number }[];
 }
 
 export interface TrafficSummary {
   totalActiveConnections: number;
   totalRequests: number;
+  visitorRequests: number;
   requestsPerSec: number;
   totalBytes: number;
   totalBytesFormatted: string;
@@ -136,7 +142,7 @@ export interface TrafficSummary {
     '4xx': number;
     '5xx': number;
   };
-  historySeries: { timestamp: number; time: string; requests: number; errors: number; avgLatency: number }[];
+  historySeries: { timestamp: number; time: string; requests: number; visitorRequests: number; errors: number; avgLatency: number }[];
   domains: Record<string, DomainStats>;
   recentLogs: TrafficLogEntry[];
 }

@@ -5,6 +5,8 @@ import util from 'util';
 
 const execAsync = util.promisify(exec);
 
+export type TrafficCategory = 'page' | 'api' | 'asset' | 'internal';
+
 export interface TrafficLogEntry {
   id: string;
   timestamp: number;
@@ -20,6 +22,8 @@ export interface TrafficLogEntry {
   clientIp: string;
   country: string;
   userAgent?: string;
+  isInternal: boolean;
+  category: TrafficCategory;
 }
 
 export interface DomainStats {
@@ -27,6 +31,7 @@ export interface DomainStats {
   host: string;
   activeConnections: number;
   totalRequests: number;
+  visitorRequests: number; // Excludes internal system polling
   requestsLastHour: number;
   requestsPerSec: number;
   totalBytes: number;
@@ -37,13 +42,14 @@ export interface DomainStats {
     '4xx': number;
     '5xx': number;
   };
-  topPaths: { path: string; count: number; avgDurationMs: number }[];
+  topPaths: { path: string; count: number; avgDurationMs: number; category: TrafficCategory }[];
   topCountries: { code: string; count: number }[];
 }
 
 export interface TrafficSummary {
   totalActiveConnections: number;
   totalRequests: number;
+  visitorRequests: number; // Real user visitors count
   requestsPerSec: number;
   totalBytes: number;
   totalBytesFormatted: string;
@@ -54,7 +60,7 @@ export interface TrafficSummary {
     '4xx': number;
     '5xx': number;
   };
-  historySeries: { timestamp: number; time: string; requests: number; errors: number; avgLatency: number }[];
+  historySeries: { timestamp: number; time: string; requests: number; visitorRequests: number; errors: number; avgLatency: number }[];
   domains: Record<string, DomainStats>;
   recentLogs: TrafficLogEntry[];
 }
@@ -79,6 +85,7 @@ interface MinuteBucket {
   minuteKey: string; // YYYY-MM-DD HH:mm
   timestamp: number;
   requests: number;
+  visitorRequests: number;
   errors: number;
   totalDurationMs: number;
 }
@@ -109,6 +116,49 @@ function formatBytes(bytes: number): string {
 function getMinuteKey(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Detect if a path is Nabiz internal polling or static asset or real page
+function classifyRequest(project: string, urlPath: string): { isInternal: boolean; category: TrafficCategory } {
+  const lower = urlPath.toLowerCase();
+
+  // Internal Nabiz dashboard polling endpoints
+  if (
+    (project === 'nabiz' || lower.startsWith('/api/')) &&
+    (lower.startsWith('/api/system') ||
+      lower.startsWith('/api/projects') ||
+      lower.startsWith('/api/traffic') ||
+      lower.startsWith('/api/health') ||
+      lower.startsWith('/ws') ||
+      lower === '/robots.txt' ||
+      lower === '/favicon.ico')
+  ) {
+    return { isInternal: true, category: 'internal' };
+  }
+
+  // Static assets (CSS, JS, Fonts, Images)
+  if (
+    lower.startsWith('/assets/') ||
+    lower.endsWith('.js') ||
+    lower.endsWith('.css') ||
+    lower.endsWith('.svg') ||
+    lower.endsWith('.png') ||
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.woff') ||
+    lower.endsWith('.woff2') ||
+    lower.endsWith('.map') ||
+    lower.endsWith('.ico')
+  ) {
+    return { isInternal: false, category: 'asset' };
+  }
+
+  // Generic APIs
+  if (lower.startsWith('/api/')) {
+    return { isInternal: false, category: 'api' };
+  }
+
+  // Real visitor page requests
+  return { isInternal: false, category: 'page' };
 }
 
 // Parse a single Caddy JSON log line
@@ -148,6 +198,7 @@ function parseCaddyLine(line: string, fallbackProject?: string): TrafficLogEntry
     const timeFormatted = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
 
     const id = `${timestamp}-${Math.random().toString(36).substring(2, 7)}`;
+    const { isInternal, category } = classifyRequest(project, urlPath);
 
     return {
       id,
@@ -164,6 +215,8 @@ function parseCaddyLine(line: string, fallbackProject?: string): TrafficLogEntry
       clientIp,
       country,
       userAgent,
+      isInternal,
+      category,
     };
   } catch {
     return null;
@@ -187,12 +240,16 @@ export function ingestLogs(entries: TrafficLogEntry[]) {
         minuteKey: mKey,
         timestamp: new Date(mKey.replace(' ', 'T') + ':00').getTime(),
         requests: 0,
+        visitorRequests: 0,
         errors: 0,
         totalDurationMs: 0,
       };
       minuteBuckets.set(mKey, bucket);
     }
     bucket.requests++;
+    if (!entry.isInternal) {
+      bucket.visitorRequests++;
+    }
     if (entry.status >= 400) bucket.errors++;
     bucket.totalDurationMs += entry.durationMs;
   }
@@ -213,7 +270,6 @@ export function ingestLogs(entries: TrafficLogEntry[]) {
 
 // Read log files
 async function pollLogFiles() {
-  // Find log files in known locations
   const filesToRead: { filePath: string; project: string }[] = [];
 
   for (const dir of LOG_DIRS) {
@@ -261,7 +317,6 @@ async function pollLogFiles() {
   }
 
   if (newEntries.length > 0) {
-    // Sort chronologically before ingesting
     newEntries.sort((a, b) => a.timestamp - b.timestamp);
     ingestLogs(newEntries);
   }
@@ -294,43 +349,49 @@ async function pollActiveConnections() {
       counts[proj] = matches ? matches.length : 0;
     }
 
-    counts.total = Object.values(counts).reduce((a, b) => a + b, 0);
+    // Total active visitor connections on user-facing apps (odak, thedemir) + nabiz
+    counts.total = counts.odak + counts.thedemir;
     activeConnections = counts;
   } catch {}
 }
 
-// Compute comprehensive summary and domain-level metrics
+// Compute summary and domain-level metrics
 export function getTrafficSummary(): TrafficSummary {
   const now = Date.now();
   const oneHourAgo = now - 3600 * 1000;
   const oneMinuteAgo = now - 60 * 1000;
 
   let totalRequests = recentLogs.length;
+  let visitorRequests = 0;
   let totalBytes = 0;
   let totalDuration = 0;
-  let reqsInLastMinute = 0;
+  let visitorReqsInLastMinute = 0;
 
   const statusCodes = { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 };
 
   const domainMap: Record<string, {
     logs: TrafficLogEntry[];
+    visitorLogs: TrafficLogEntry[];
     bytes: number;
     duration: number;
     statusCodes: { '2xx': number; '3xx': number; '4xx': number; '5xx': number };
-    pathCounts: Map<string, { count: number; totalDuration: number }>;
+    pathCounts: Map<string, { count: number; totalDuration: number; category: TrafficCategory }>;
     countryCounts: Map<string, number>;
   }> = {
-    odak: { logs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
-    thedemir: { logs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
-    nabiz: { logs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
+    odak: { logs: [], visitorLogs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
+    thedemir: { logs: [], visitorLogs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
+    nabiz: { logs: [], visitorLogs: [], bytes: 0, duration: 0, statusCodes: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }, pathCounts: new Map(), countryCounts: new Map() },
   };
 
   for (const log of recentLogs) {
     totalBytes += log.sizeBytes;
     totalDuration += log.durationMs;
 
-    if (log.timestamp >= oneMinuteAgo) {
-      reqsInLastMinute++;
+    if (!log.isInternal) {
+      visitorRequests++;
+      if (log.timestamp >= oneMinuteAgo) {
+        visitorReqsInLastMinute++;
+      }
     }
 
     if (log.status >= 200 && log.status < 300) statusCodes['2xx']++;
@@ -341,6 +402,7 @@ export function getTrafficSummary(): TrafficSummary {
     const dKey = domainMap[log.project] ? log.project : 'thedemir';
     const dObj = domainMap[dKey];
     dObj.logs.push(log);
+    if (!log.isInternal) dObj.visitorLogs.push(log);
     dObj.bytes += log.sizeBytes;
     dObj.duration += log.durationMs;
 
@@ -349,29 +411,34 @@ export function getTrafficSummary(): TrafficSummary {
     else if (log.status >= 400 && log.status < 500) dObj.statusCodes['4xx']++;
     else if (log.status >= 500) dObj.statusCodes['5xx']++;
 
-    // Path count
-    const pStat = dObj.pathCounts.get(log.path) || { count: 0, totalDuration: 0 };
-    pStat.count++;
-    pStat.totalDuration += log.durationMs;
-    dObj.pathCounts.set(log.path, pStat);
+    // Record path (skip internal polling from top paths unless no real paths exist)
+    if (!log.isInternal || dObj.pathCounts.size < 3) {
+      const pStat = dObj.pathCounts.get(log.path) || { count: 0, totalDuration: 0, category: log.category };
+      pStat.count++;
+      pStat.totalDuration += log.durationMs;
+      dObj.pathCounts.set(log.path, pStat);
+    }
 
-    // Country count
-    const cCount = dObj.countryCounts.get(log.country) || 0;
-    dObj.countryCounts.set(log.country, cCount + 1);
+    // Country count for visitors
+    if (!log.isInternal) {
+      const cCount = dObj.countryCounts.get(log.country) || 0;
+      dObj.countryCounts.set(log.country, cCount + 1);
+    }
   }
 
   // Build domain stats
   const domains: Record<string, DomainStats> = {};
   for (const [proj, dObj] of Object.entries(domainMap)) {
-    const projLogs = dObj.logs;
-    const projReqLastHour = projLogs.filter((l) => l.timestamp >= oneHourAgo).length;
-    const projReqLastMin = projLogs.filter((l) => l.timestamp >= oneMinuteAgo).length;
+    const projVisitorLogs = dObj.visitorLogs;
+    const projReqLastHour = projVisitorLogs.filter((l) => l.timestamp >= oneHourAgo).length;
+    const projReqLastMin = projVisitorLogs.filter((l) => l.timestamp >= oneMinuteAgo).length;
 
     const topPaths = Array.from(dObj.pathCounts.entries())
       .map(([path, data]) => ({
         path,
         count: data.count,
         avgDurationMs: Math.round((data.totalDuration / data.count) * 10) / 10,
+        category: data.category,
       }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
@@ -385,11 +452,12 @@ export function getTrafficSummary(): TrafficSummary {
       project: proj,
       host: proj === 'odak' ? 'odak.thedemir.com' : proj === 'nabiz' ? 'nabiz.thedemir.com' : 'thedemir.com',
       activeConnections: activeConnections[proj] || 0,
-      totalRequests: projLogs.length,
+      totalRequests: dObj.logs.length,
+      visitorRequests: projVisitorLogs.length,
       requestsLastHour: projReqLastHour,
       requestsPerSec: Math.round((projReqLastMin / 60) * 10) / 10,
       totalBytes: dObj.bytes,
-      avgDurationMs: projLogs.length > 0 ? Math.round((dObj.duration / projLogs.length) * 10) / 10 : 0,
+      avgDurationMs: dObj.logs.length > 0 ? Math.round((dObj.duration / dObj.logs.length) * 10) / 10 : 0,
       statusCodes: dObj.statusCodes,
       topPaths,
       topCountries,
@@ -397,16 +465,16 @@ export function getTrafficSummary(): TrafficSummary {
   }
 
   // Build last 30 minutes time-series
-  const historySeries: { timestamp: number; time: string; requests: number; errors: number; avgLatency: number }[] = [];
+  const historySeries: { timestamp: number; time: string; requests: number; visitorRequests: number; errors: number; avgLatency: number }[] = [];
   const sortedBuckets = Array.from(minuteBuckets.values()).sort((a, b) => a.timestamp - b.timestamp);
   
-  // If no buckets, create current minute empty bucket
   if (sortedBuckets.length === 0) {
     const d = new Date();
     historySeries.push({
       timestamp: d.getTime(),
       time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
       requests: 0,
+      visitorRequests: 0,
       errors: 0,
       avgLatency: 0,
     });
@@ -417,6 +485,7 @@ export function getTrafficSummary(): TrafficSummary {
         timestamp: b.timestamp,
         time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
         requests: b.requests,
+        visitorRequests: b.visitorRequests,
         errors: b.errors,
         avgLatency: b.requests > 0 ? Math.round((b.totalDurationMs / b.requests) * 10) / 10 : 0,
       });
@@ -426,7 +495,8 @@ export function getTrafficSummary(): TrafficSummary {
   return {
     totalActiveConnections: activeConnections.total || 0,
     totalRequests,
-    requestsPerSec: Math.round((reqsInLastMinute / 60) * 10) / 10,
+    visitorRequests,
+    requestsPerSec: Math.round((visitorReqsInLastMinute / 60) * 10) / 10,
     totalBytes,
     totalBytesFormatted: formatBytes(totalBytes),
     avgDurationMs: totalRequests > 0 ? Math.round((totalDuration / totalRequests) * 10) / 10 : 0,
@@ -441,7 +511,6 @@ export function getTrafficSummary(): TrafficSummary {
 let monitorInterval: NodeJS.Timeout | null = null;
 
 export function startTrafficMonitoring() {
-  // Create data/logs directory if not exists
   const localLogsDir = path.resolve(process.cwd(), 'data/logs');
   if (!fs.existsSync(localLogsDir)) {
     try {
@@ -449,11 +518,9 @@ export function startTrafficMonitoring() {
     } catch {}
   }
 
-  // Initial poll
   pollLogFiles();
   pollActiveConnections();
 
-  // Poll every 1.5 seconds for fresh logs and netstat
   if (!monitorInterval) {
     monitorInterval = setInterval(async () => {
       await Promise.all([pollLogFiles(), pollActiveConnections()]);
