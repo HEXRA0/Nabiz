@@ -6,43 +6,54 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { CONFIG } from './config.js';
-import { initDatabase, db } from './db/index.js';
-import { startScheduler, setSchedulerBroadcaster } from './engine/scheduler.js';
+import { initDatabase } from './db/index.js';
+import { initProjectTables, getAllProjects } from './sys/processManager.js';
+import { getSystemStats } from './sys/systemStats.js';
 
-import servicesRoutes from './routes/services.js';
+import projectsRoutes from './routes/projects.js';
+import systemRoutes from './routes/system.js';
 import alertsRoutes from './routes/alerts.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize DB schema
+// Initialize DB schema & tables
 initDatabase();
+initProjectTables();
 
 const app = express();
 const server = http.createServer(app);
 
-// WebSocket server for real-time live metrics
+// WebSocket server for streaming real-time RAM/CPU updates to the UI
 const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set<WebSocket>();
 
-wss.on('connection', (ws) => {
+wss.on('connection', async (ws) => {
   clients.add(ws);
-  ws.send(JSON.stringify({ type: 'connected', time: new Date().toISOString() }));
+
+  // Send initial data immediately
+  try {
+    const [system, projects] = await Promise.all([getSystemStats(), getAllProjects()]);
+    ws.send(JSON.stringify({ event: 'system_metrics', data: { system, projects } }));
+  } catch (e) {}
 
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
 });
 
-const broadcastToWs = (event: string, data: any) => {
-  const message = JSON.stringify({ event, data });
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
+// Periodic broadcaster: every 2.5 seconds pushes fresh RAM & CPU stats
+setInterval(async () => {
+  if (clients.size === 0) return;
+  try {
+    const [system, projects] = await Promise.all([getSystemStats(), getAllProjects()]);
+    const message = JSON.stringify({ event: 'system_metrics', data: { system, projects } });
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
     }
-  }
-};
-
-setSchedulerBroadcaster(broadcastToWs);
+  } catch (e) {}
+}, 2500);
 
 // Express Middleware
 app.use(cors());
@@ -50,54 +61,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // API Routes
-app.use('/api/services', servicesRoutes);
+app.use('/api/projects', projectsRoutes);
+app.use('/api/system', systemRoutes);
 app.use('/api/alerts', alertsRoutes);
-
-// Public Status Endpoint
-app.get('/api/public/status', (req, res) => {
-  const monitors = db.prepare('SELECT id, name, url, current_status, last_checked_at, last_latency_ms FROM monitors WHERE is_paused = 0').all() as any[];
-
-  const services = monitors.map((m) => {
-    const dailyHistory = db.prepare(`
-      SELECT
-        date(created_at) as date,
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'up' THEN 1 ELSE 0 END) as up_count
-      FROM checks
-      WHERE monitor_id = ? AND created_at >= datetime('now', '-30 days')
-      GROUP BY date(created_at)
-      ORDER BY date ASC
-    `).all(m.id) as any[];
-
-    const total = dailyHistory.reduce((acc, d) => acc + d.total, 0);
-    const up = dailyHistory.reduce((acc, d) => acc + d.up_count, 0);
-    const uptime = total > 0 ? ((up / total) * 100).toFixed(1) : '100.0';
-
-    return {
-      id: m.id,
-      name: m.name,
-      status: m.current_status,
-      latency: m.last_latency_ms,
-      uptime: parseFloat(uptime),
-      dailyHistory,
-    };
-  });
-
-  const hasDown = services.some((s) => s.status === 'down');
-  const hasPending = services.some((s) => s.status === 'pending');
-
-  res.json({
-    overallStatus: hasDown ? 'down' : hasPending ? 'degraded' : 'up',
-    services,
-  });
-});
 
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    uptime: Math.floor(process.uptime()),
     service: 'nabiz.thedemir.com',
+    uptime: Math.floor(process.uptime()),
   });
 });
 
@@ -115,8 +88,7 @@ if (fs.existsSync(distPath)) {
 
 // Start server
 server.listen(CONFIG.PORT, CONFIG.HOST, () => {
-  console.log(`[Nabız] Server running on http://${CONFIG.HOST}:${CONFIG.PORT}`);
-  startScheduler();
+  console.log(`[Nabız Server Manager] Running on http://${CONFIG.HOST}:${CONFIG.PORT}`);
 });
 
 const shutdown = () => {
