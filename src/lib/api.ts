@@ -1,5 +1,14 @@
 const API_BASE = '/api';
 
+export interface ProjectActivity {
+  id: number;
+  project_name: string;
+  action: 'start' | 'stop' | 'restart';
+  status: 'success' | 'error';
+  message: string;
+  created_at: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -18,6 +27,12 @@ export interface Project {
   directory?: string;
   isCustom?: boolean;
   isSelf?: boolean;
+  lastActivity?: {
+    action: 'start' | 'stop' | 'restart';
+    status: 'success' | 'error';
+    message: string;
+    createdAt: string;
+  };
 }
 
 export interface SystemStats {
@@ -81,6 +96,7 @@ export const api = {
     action: (id: string, action: 'start' | 'stop' | 'restart'): Promise<{ success: boolean; message: string }> =>
       request(`/projects/${id}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
     logs: (id: string): Promise<{ logs: string }> => request(`/projects/${id}/logs`),
+    activities: (): Promise<ProjectActivity[]> => request('/projects/activities'),
   },
   system: {
     stats: (): Promise<SystemStats> => request('/system/stats'),

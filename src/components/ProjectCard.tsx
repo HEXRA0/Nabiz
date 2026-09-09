@@ -212,6 +212,30 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Persistent Last Activity / Operation Log (Loaded from Database) */}
+          {project.lastActivity && (
+            <div className="flex items-center justify-between text-[11px] px-3 py-2 rounded-2xl bg-[#080d16]/90 border border-slate-800/80 text-slate-300">
+              <div className="flex items-center gap-2 min-w-0 truncate">
+                <span
+                  className={`h-2 w-2 rounded-full shrink-0 ${
+                    project.lastActivity.status === 'success'
+                      ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                      : 'bg-rose-400'
+                  }`}
+                />
+                <span className="font-semibold text-slate-200 shrink-0">
+                  Son İşlem: {project.lastActivity.action === 'start' ? 'Başlatıldı' : project.lastActivity.action === 'stop' ? 'Durduruldu' : 'Yeniden Başlatıldı'}
+                </span>
+                <span className="text-slate-400 truncate text-[10.5px]">
+                  • {project.lastActivity.message}
+                </span>
+              </div>
+              <span className="font-mono text-[10px] text-slate-500 shrink-0 ml-2">
+                {project.lastActivity.createdAt.split(' ')[1] || project.lastActivity.createdAt}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Footer Controls: Restart & Console Logs */}

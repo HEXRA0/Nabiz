@@ -20,6 +20,8 @@ import { ProjectCard } from './components/ProjectCard.js';
 import { SystemModule } from './components/SystemModule.js';
 import { LogTerminalModal } from './components/LogTerminalModal.js';
 import { AddProjectModal } from './components/AddProjectModal.js';
+import { ActivityLogsModal } from './components/ActivityLogsModal.js';
+import { History } from 'lucide-react';
 
 interface ActionToast {
   id: string;
@@ -47,6 +49,7 @@ export function App() {
   // Modals
   const [selectedLogProject, setSelectedLogProject] = useState<Project | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isActivityLogsOpen, setIsActivityLogsOpen] = useState(false);
 
   const addToast = (toast: Omit<ActionToast, 'id'>) => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -233,6 +236,14 @@ export function App() {
                 </div>
 
                 <button
+                  onClick={() => setIsActivityLogsOpen(true)}
+                  className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 font-semibold text-xs py-2.5 px-3.5 rounded-2xl border border-slate-700/80 transition active:scale-95 shrink-0"
+                >
+                  <History className="h-4 w-4 text-teal-400" />
+                  <span>İşlem Geçmişi</span>
+                </button>
+
+                <button
                   onClick={() => setIsAddModalOpen(true)}
                   className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold text-xs py-2.5 px-4 rounded-2xl shadow-lg shadow-emerald-950/40 transition active:scale-95 shrink-0"
                 >
@@ -300,6 +311,12 @@ export function App() {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onSuccess={() => fetchData()}
+      />
+
+      {/* Activity Logs & Audit History Modal */}
+      <ActivityLogsModal
+        isOpen={isActivityLogsOpen}
+        onClose={() => setIsActivityLogsOpen(false)}
       />
 
       {/* Floating Action Notifications / Toasts (Bottom Right) */}

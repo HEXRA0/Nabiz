@@ -4,6 +4,7 @@ import {
   getAllProjects,
   executeProjectAction,
   getProjectLogs,
+  getRecentProjectActivities,
   ProjectProcess
 } from '../sys/processManager.js';
 
@@ -16,6 +17,16 @@ router.get('/', async (req, res) => {
     res.json(projects);
   } catch (e: any) {
     res.status(500).json({ error: 'Projeler listelenirken hata: ' + e.message });
+  }
+});
+
+// Get recent project action activity history
+router.get('/activities', (req, res) => {
+  try {
+    const activities = getRecentProjectActivities(40);
+    res.json(activities);
+  } catch (e: any) {
+    res.status(500).json({ error: 'Olay geçmişi alınamadı: ' + e.message });
   }
 });
 

@@ -7,6 +7,15 @@ import { db } from '../db/index.js';
 
 const execAsync = util.promisify(exec);
 
+export interface ProjectActivity {
+  id: number;
+  project_name: string;
+  action: 'start' | 'stop' | 'restart';
+  status: 'success' | 'error';
+  message: string;
+  created_at: string;
+}
+
 export interface ProjectProcess {
   id: string;
   name: string;
@@ -28,6 +37,12 @@ export interface ProjectProcess {
   stopCommand?: string;
   isCustom?: boolean;
   isSelf?: boolean;
+  lastActivity?: {
+    action: 'start' | 'stop' | 'restart';
+    status: 'success' | 'error';
+    message: string;
+    createdAt: string;
+  };
 }
 
 // OS process blacklist (filter out internal OS noise on Windows/Linux/macOS)
@@ -67,7 +82,7 @@ const OS_PROCESS_BLACKLIST = new Set([
 // Ignored system ports unless explicitly tracked
 const IGNORED_PORTS = new Set([135, 445, 3389, 22]);
 
-// Database table for tracked user projects
+// Database table for tracked user projects and action history
 export function initProjectTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracked_projects (
@@ -82,7 +97,38 @@ export function initProjectTables() {
       log_file_path TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS project_activities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_proj_act_created ON project_activities(created_at DESC);
   `);
+}
+
+export function recordProjectActivity(projectName: string, action: 'start' | 'stop' | 'restart', status: 'success' | 'error', message: string) {
+  try {
+    db.prepare(`
+      INSERT INTO project_activities (project_name, action, status, message, created_at)
+      VALUES (?, ?, ?, ?, datetime('now', 'localtime'))
+    `).run(projectName, action, status, message);
+  } catch (e) {}
+}
+
+export function getRecentProjectActivities(limit = 30): ProjectActivity[] {
+  try {
+    initProjectTables();
+    return db.prepare(`
+      SELECT * FROM project_activities ORDER BY id DESC LIMIT ?
+    `).all(limit) as ProjectActivity[];
+  } catch (e) {
+    return [];
+  }
 }
 
 // 1. Discover PM2 apps
@@ -481,6 +527,30 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
     return false;
   });
 
+  // Attach latest activity from SQLite database
+  try {
+    const activities = db.prepare(`SELECT * FROM project_activities ORDER BY id DESC`).all() as ProjectActivity[];
+    const lastActivityMap = new Map<string, ProjectActivity>();
+    for (const act of activities) {
+      const k = act.project_name.toLowerCase();
+      if (!lastActivityMap.has(k)) {
+        lastActivityMap.set(k, act);
+      }
+    }
+
+    filtered.forEach((p) => {
+      const act = lastActivityMap.get(p.name.toLowerCase());
+      if (act) {
+        p.lastActivity = {
+          action: act.action,
+          status: act.status,
+          message: act.message,
+          createdAt: act.created_at,
+        };
+      }
+    });
+  } catch (e) {}
+
   return filtered.sort((a, b) => {
     // Keep 'odak', 'thedemir', 'nabız' at top
     const order: Record<string, number> = { 'odak': 1, 'thedemir': 2, 'nabız': 3, 'nabiz': 3 };
@@ -496,6 +566,8 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
   try {
     const isWin = os.platform() === 'win32';
     const projName = project.name.toLowerCase();
+
+    let result: { success: boolean; message: string };
 
     // 1. Core / Specific named projects handling
     if (projName === 'odak') {
@@ -514,10 +586,8 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
           exec('node server/index.mjs', { cwd: project.directory || '/Projects/odak', env: { ...process.env, PORT: '4173', HOST: '0.0.0.0' } });
         }
       }
-      return { success: true, message: `Odak projesi ${action} işlemi tamamlandı.` };
-    }
-
-    if (projName === 'thedemir') {
+      result = { success: true, message: `Odak projesi ${action === 'start' ? 'başlatıldı' : action === 'stop' ? 'durduruldu' : 'yeniden başlatıldı'}.` };
+    } else if (projName === 'thedemir') {
       if (action === 'stop' || action === 'restart') {
         if (isWin) {
           await execAsync('powershell -Command "Stop-Service Caddy -ErrorAction SilentlyContinue; Stop-Process -Name caddy -Force -ErrorAction SilentlyContinue"').catch(() => {});
@@ -528,76 +598,65 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
           await execAsync('powershell -Command "Start-Service Caddy -ErrorAction SilentlyContinue; if (!(Get-Process caddy -ErrorAction SilentlyContinue)) { Start-Process \'C:\\Caddy\\caddy.exe\' -ArgumentList \'run --config C:\\Caddy\\Caddyfile\' -WindowStyle Hidden }"');
         }
       }
-      return { success: true, message: `Thedemir (Caddy) ${action} işlemi tamamlandı.` };
-    }
-
-    if (projName === 'nabiz' || projName === 'nabız') {
+      result = { success: true, message: `Thedemir (Caddy) ${action === 'start' ? 'başlatıldı' : action === 'stop' ? 'durduruldu' : 'yeniden başlatıldı'}.` };
+    } else if (projName === 'nabiz' || projName === 'nabız') {
       if (action === 'stop') {
         if (isWin) {
           await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
         } else if (project.pid) {
           await execAsync(`kill -9 ${project.pid}`).catch(() => {});
         }
-        return { success: true, message: 'Nabız servisi durduruldu.' };
-      }
-      if (action === 'start' || action === 'restart') {
+        result = { success: true, message: 'Nabız servisi durduruldu.' };
+      } else {
         if (isWin) {
           await execAsync('schtasks /run /tn "NabizService"');
         }
-        return { success: true, message: 'Nabız servisi başlatıldı.' };
+        result = { success: true, message: 'Nabız servisi başlatıldı.' };
       }
-    }
-
-    // 2. PM2 action
-    if (project.type === 'pm2') {
+    } else if (project.type === 'pm2') {
       const pmId = project.id.replace('pm2-', '');
       const pm2Cmd = isWin ? `pm2 ${action} ${pmId}` : `pm2 ${action} ${pmId} || npx pm2 ${action} ${pmId}`;
       await execAsync(pm2Cmd);
-      return { success: true, message: `PM2 projesi (${project.name}) ${action} işlemi tamamlandı.` };
-    }
-
-    // 3. Docker action
-    if (project.type === 'docker') {
+      result = { success: true, message: `PM2 projesi (${project.name}) ${action} işlemi tamamlandı.` };
+    } else if (project.type === 'docker') {
       const containerName = project.name;
       await execAsync(`docker ${action} ${containerName}`);
-      return { success: true, message: `Docker konteyneri (${containerName}) ${action} işlemi tamamlandı.` };
-    }
-
-    // 4. Custom Commands
-    if (action === 'start' && project.startCommand) {
+      result = { success: true, message: `Docker konteyneri (${containerName}) ${action} işlemi tamamlandı.` };
+    } else if (action === 'start' && project.startCommand) {
       const cwd = project.directory || process.cwd();
       exec(project.startCommand, { cwd });
-      return { success: true, message: `Başlatma komutu çalıştırıldı: ${project.startCommand}` };
-    }
-    if (action === 'restart' && project.restartCommand) {
+      result = { success: true, message: `Başlatma komutu çalıştırıldı: ${project.startCommand}` };
+    } else if (action === 'restart' && project.restartCommand) {
       const cwd = project.directory || process.cwd();
       await execAsync(project.restartCommand, { cwd });
-      return { success: true, message: `Yeniden başlatma komutu çalıştırıldı.` };
-    }
-    if (action === 'stop' && project.stopCommand) {
+      result = { success: true, message: `Yeniden başlatma komutu çalıştırıldı.` };
+    } else if (action === 'stop' && project.stopCommand) {
       const cwd = project.directory || process.cwd();
       await execAsync(project.stopCommand, { cwd });
-      return { success: true, message: `Durdurma komutu çalıştırıldı.` };
-    }
-
-    // 5. Port / PID Direct Stop
-    if (action === 'stop') {
+      result = { success: true, message: `Durdurma komutu çalıştırıldı.` };
+    } else if (action === 'stop') {
       if (project.pid) {
         const killCmd = isWin ? `taskkill /F /T /PID ${project.pid}` : `kill -15 ${project.pid} 2>/dev/null || kill -9 ${project.pid}`;
         await execAsync(killCmd);
-        return { success: true, message: `PID ${project.pid} durduruldu.` };
-      }
-      if (project.port) {
+        result = { success: true, message: `PID ${project.pid} durduruldu.` };
+      } else if (project.port) {
         if (isWin) {
           await execAsync(`powershell -Command "$p = (Get-NetTCPConnection -LocalPort ${project.port} -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
         }
-        return { success: true, message: `Port ${project.port} üzerindeki işlem durduruldu.` };
+        result = { success: true, message: `Port ${project.port} üzerindeki işlem durduruldu.` };
+      } else {
+        result = { success: false, message: 'Durdurulacak aktif bir işlem bulunamadı.' };
       }
+    } else {
+      result = { success: false, message: 'Bu proje için başlatma/durdurma komutu tanımlı değil.' };
     }
 
-    return { success: false, message: 'Bu proje için başlatma/durdurma komutu tanımlı değil.' };
+    recordProjectActivity(project.name, action, result.success ? 'success' : 'error', result.message);
+    return result;
   } catch (e: any) {
-    return { success: false, message: 'İşlem başarısız: ' + e.message };
+    const errorResult = { success: false, message: 'İşlem başarısız: ' + e.message };
+    recordProjectActivity(project.name, action, 'error', errorResult.message);
+    return errorResult;
   }
 }
 
