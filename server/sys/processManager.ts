@@ -27,7 +27,45 @@ export interface ProjectProcess {
   restartCommand?: string;
   stopCommand?: string;
   isCustom?: boolean;
+  isSelf?: boolean;
 }
+
+// OS process blacklist (filter out internal OS noise on Windows/Linux/macOS)
+const OS_PROCESS_BLACKLIST = new Set([
+  'svchost.exe', 'svchost',
+  'lsass.exe', 'lsass',
+  'spoolsv.exe', 'spoolsv',
+  'services.exe', 'services',
+  'wininit.exe', 'wininit',
+  'winlogon.exe', 'winlogon',
+  'csrss.exe', 'csrss',
+  'dwm.exe', 'dwm',
+  'fontdrvhost.exe', 'fontdrvhost',
+  'sihost.exe', 'sihost',
+  'taskhostw.exe', 'taskhostw',
+  'TextInputHost.exe', 'TextInputHost',
+  'SearchApp.exe', 'SearchApp',
+  'RuntimeBroker.exe', 'RuntimeBroker',
+  'AggregatorHost.exe', 'AggregatorHost',
+  'msdtc.exe', 'msdtc',
+  'vds.exe', 'vds',
+  'sppsvc.exe', 'sppsvc',
+  'WmiPrvSE.exe', 'WmiPrvSE',
+  'dllhost.exe', 'dllhost',
+  'conhost.exe', 'conhost',
+  'explorer.exe', 'explorer',
+  'rdpclip.exe', 'rdpclip',
+  'StartMenuExperienceHost.exe',
+  'VGAuthService.exe',
+  'vmtoolsd.exe',
+  'vm3dservice.exe',
+  'wlms.exe',
+  'System',
+  'sshd.exe', 'sshd',
+]);
+
+// Ignored system ports unless explicitly tracked
+const IGNORED_PORTS = new Set([135, 445, 3389, 22]);
 
 // Database table for tracked user projects
 export function initProjectTables() {
@@ -36,7 +74,7 @@ export function initProjectTables() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'port', -- 'port', 'pm2', 'docker', 'process'
-      target TEXT NOT NULL, -- e.g. '5173', 'odak', 'container_name'
+      target TEXT NOT NULL, -- e.g. '4173', 'odak', 'container_name'
       directory TEXT,
       start_command TEXT,
       restart_command TEXT,
@@ -58,7 +96,6 @@ async function getPm2Projects(): Promise<ProjectProcess[]> {
     const { stdout } = await execAsync(pm2Cmd);
     if (!stdout.trim() || !stdout.includes('[')) return [];
 
-    // Extract json array in case of pm2 banners
     const jsonStart = stdout.indexOf('[');
     const jsonEnd = stdout.lastIndexOf(']');
     if (jsonStart === -1 || jsonEnd === -1) return [];
@@ -73,10 +110,12 @@ async function getPm2Projects(): Promise<ProjectProcess[]> {
       const cpuPercent = Math.round((app.monit?.cpu || 0) * 10) / 10;
       const status = app.pm2_env?.status === 'online' ? 'online' : 'stopped';
       const uptime = app.pm2_env?.pm_uptime ? Math.max(0, Math.floor((Date.now() - app.pm2_env.pm_uptime) / 1000)) : 0;
+      const name = app.name || `PM2 #${app.pm_id}`;
+      const isNabiz = name.toLowerCase().includes('nabiz') || name.toLowerCase().includes('nabız');
 
       return {
         id: `pm2-${app.pm_id}`,
-        name: app.name || `PM2 #${app.pm_id}`,
+        name: isNabiz ? 'nabız' : name,
         type: 'pm2',
         pid: app.pid,
         status,
@@ -89,6 +128,7 @@ async function getPm2Projects(): Promise<ProjectProcess[]> {
         command: app.pm2_env?.pm_exec_path,
         logPath: app.pm2_env?.pm_out_log_path,
         directory: app.pm2_env?.pm_cwd,
+        isSelf: isNabiz,
       };
     });
   } catch (e) {
@@ -148,7 +188,6 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
 
   if (isWin) {
     try {
-      // Windows implementation: netstat + tasklist
       const { stdout: netOut } = await execAsync('netstat -ano -p tcp');
       const lines = netOut.split('\n');
       const portMap = new Map<number, number>(); // pid -> port
@@ -179,22 +218,35 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
         if (csvParts.length >= 5) {
           const procName = csvParts[0];
           const pid = parseInt(csvParts[1], 10);
-          const memStr = csvParts[4].replace(/[^\d]/g, ''); // "9.637 K" -> 9637
+          const memStr = csvParts[4].replace(/[^\d]/g, '');
           const memKb = parseInt(memStr, 10) || 0;
 
           if (portMap.has(pid)) {
             const port = portMap.get(pid)!;
+
+            // Skip Windows OS system services and high RPC / ignored ports
+            if (OS_PROCESS_BLACKLIST.has(procName) || IGNORED_PORTS.has(port) || port >= 49000) {
+              continue;
+            }
+
             const memoryBytes = memKb * 1024;
             const memoryMb = Math.round((memoryBytes / (1024 * 1024)) * 10) / 10;
             const memoryPercent = totalMem > 0 ? parseFloat(((memoryBytes / totalMem) * 100).toFixed(1)) : 0;
 
-            let cleanName = procName;
-            if (procName.toLowerCase().includes('node')) {
-              cleanName = `Node Uygulaması (Port ${port})`;
-            } else if (procName.toLowerCase().includes('caddy')) {
-              cleanName = `Caddy Web Sunucusu (Port ${port})`;
-            } else {
-              cleanName = `${procName.replace('.exe', '')} (Port ${port})`;
+            let cleanName = procName.replace('.exe', '');
+            let isSelf = false;
+            let directory: string | undefined;
+
+            if (port === 3001 || procName.toLowerCase().includes('nabiz')) {
+              cleanName = 'nabız';
+              isSelf = true;
+              directory = 'C:/Projects/Nabiz';
+            } else if (port === 4173 || procName.toLowerCase().includes('odak')) {
+              cleanName = 'odak';
+              directory = 'C:/Projects/odak';
+            } else if (port === 80 || port === 443 || procName.toLowerCase().includes('caddy')) {
+              cleanName = 'thedemir';
+              directory = 'C:/Projects/thedemir';
             }
 
             result.push({
@@ -210,6 +262,8 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
               cpuPercent: 0,
               uptimeSeconds: 0,
               command: procName,
+              directory,
+              isSelf,
             });
           }
         }
@@ -239,7 +293,9 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
         const port = parseInt(namePart.split(':').pop() || '0', 10);
 
         if (pid && port > 0 && !portMap.has(pid)) {
-          portMap.set(pid, { port, commandName });
+          if (!IGNORED_PORTS.has(port) && !OS_PROCESS_BLACKLIST.has(commandName)) {
+            portMap.set(pid, { port, commandName });
+          }
         }
       }
     }
@@ -268,15 +324,15 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
       const memoryPercent = totalMem > 0 ? parseFloat(((memoryBytes / totalMem) * 100).toFixed(1)) : 0;
 
       let projectName = portInfo.commandName;
-      if (command.includes('node') || command.includes('tsx') || command.includes('vite') || command.includes('pnpm')) {
-        const matchProj = command.match(/([\w-]+)\/(node_modules|src|server|dist|package\.json)/);
-        if (matchProj && matchProj[1]) {
-          projectName = `${matchProj[1]} (Port ${portInfo.port})`;
-        } else {
-          projectName = `Node Service (Port ${portInfo.port})`;
-        }
-      } else if (command.includes('python')) {
-        projectName = `Python App (Port ${portInfo.port})`;
+      let isSelf = false;
+
+      if (portInfo.port === 3001 || portInfo.port === 5173 || command.includes('nabiz')) {
+        projectName = 'nabız';
+        isSelf = true;
+      } else if (portInfo.port === 4173 || command.includes('odak')) {
+        projectName = 'odak';
+      } else if (portInfo.port === 80 || command.includes('thedemir')) {
+        projectName = 'thedemir';
       }
 
       result.push({
@@ -292,6 +348,7 @@ async function getListeningPortProjects(): Promise<ProjectProcess[]> {
         cpuPercent: cpu,
         uptimeSeconds: parseEtimeToSeconds(etime),
         command,
+        isSelf,
       });
     }
 
@@ -317,7 +374,7 @@ function parseEtimeToSeconds(etime: string): number {
   return 0;
 }
 
-// 4. Combined Projects list
+// 4. Combined Projects list (Focusing on odak, thedemir, nabız, and user tracked projects)
 export async function getAllProjects(): Promise<ProjectProcess[]> {
   initProjectTables();
 
@@ -329,15 +386,53 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
 
   const allMap = new Map<string, ProjectProcess>();
 
-  pm2List.forEach((p) => allMap.set(p.name.toLowerCase(), p));
-  dockerList.forEach((d) => allMap.set(d.name.toLowerCase(), d));
+  // Helper to add or merge project
+  const registerProject = (p: ProjectProcess) => {
+    const key = p.name.toLowerCase();
+    allMap.set(key, p);
+  };
 
+  pm2List.forEach(registerProject);
+  dockerList.forEach(registerProject);
   portList.forEach((pr) => {
-    const isCovered = Array.from(allMap.values()).some((existing) => existing.pid && existing.pid === pr.pid);
-    if (!isCovered) {
-      allMap.set(pr.id, pr);
+    const key = pr.name.toLowerCase();
+    if (!allMap.has(key)) {
+      allMap.set(key, pr);
     }
   });
+
+  // Default core projects definition (odak, thedemir, nabız)
+  const coreProjects: Array<{ name: string; port: number; directory: string; isSelf?: boolean }> = [
+    { name: 'odak', port: 4173, directory: 'C:/Projects/odak' },
+    { name: 'thedemir', port: 80, directory: 'C:/Projects/thedemir' },
+    { name: 'nabız', port: 3001, directory: 'C:/Projects/Nabiz', isSelf: true },
+  ];
+
+  for (const core of coreProjects) {
+    const key = core.name.toLowerCase();
+    if (!allMap.has(key)) {
+      // If it is currently not running, present it in the list as stopped so user can control it
+      allMap.set(key, {
+        id: `core-${core.name}`,
+        name: core.name,
+        type: 'port',
+        port: core.port,
+        status: 'stopped',
+        memoryBytes: 0,
+        memoryMb: 0,
+        memoryPercent: 0,
+        cpuPercent: 0,
+        uptimeSeconds: 0,
+        directory: core.directory,
+        isSelf: core.isSelf,
+      });
+    } else {
+      const existing = allMap.get(key)!;
+      existing.name = core.name;
+      existing.directory = existing.directory || core.directory;
+      if (core.isSelf) existing.isSelf = true;
+    }
+  }
 
   // User tracked custom projects from SQLite
   const tracked = db.prepare('SELECT * FROM tracked_projects').all() as any[];
@@ -345,7 +440,7 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
     const portNum = parseInt(tr.target, 10);
     const matched = Array.from(allMap.values()).find((p) => {
       if (portNum && p.port === portNum) return true;
-      if (p.name.toLowerCase().includes(tr.name.toLowerCase())) return true;
+      if (p.name.toLowerCase() === tr.name.toLowerCase()) return true;
       return false;
     });
 
@@ -357,7 +452,6 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
       matched.stopCommand = tr.stop_command;
       matched.isCustom = true;
     } else {
-      // Stopped custom project
       allMap.set(`custom-${tr.id}`, {
         id: `custom-${tr.id}`,
         name: tr.name,
@@ -378,7 +472,23 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
     }
   }
 
-  return Array.from(allMap.values()).sort((a, b) => b.memoryBytes - a.memoryBytes);
+  // Filter so that only core projects (odak, thedemir, nabız), tracked projects, or custom user PM2/Docker projects are in the list
+  const allowedNames = new Set(['odak', 'thedemir', 'nabız', 'nabiz']);
+  const filtered = Array.from(allMap.values()).filter((p) => {
+    if (allowedNames.has(p.name.toLowerCase())) return true;
+    if (p.isCustom) return true;
+    if (p.type === 'pm2' || p.type === 'docker') return true;
+    return false;
+  });
+
+  return filtered.sort((a, b) => {
+    // Keep 'odak', 'thedemir', 'nabız' at top
+    const order: Record<string, number> = { 'odak': 1, 'thedemir': 2, 'nabız': 3, 'nabiz': 3 };
+    const orderA = order[a.name.toLowerCase()] || 10;
+    const orderB = order[b.name.toLowerCase()] || 10;
+    if (orderA !== orderB) return orderA - orderB;
+    return b.memoryBytes - a.memoryBytes;
+  });
 }
 
 // Actions: Start, Stop, Restart

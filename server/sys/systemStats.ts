@@ -1,6 +1,7 @@
 import os from 'os';
 import { exec } from 'child_process';
 import util from 'util';
+import fs from 'fs';
 
 const execAsync = util.promisify(exec);
 
@@ -53,10 +54,13 @@ function formatSpeed(bytesPerSec: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
 }
 
-// CPU usage calculation
-let lastCpuInfo: { idle: number; total: number } | null = null;
-function getCpuUsage(): Promise<number> {
-  return new Promise((resolve) => {
+// Background steady 1-second CPU sampler with Exponential Moving Average (EMA) smoothing
+let currentCpuUsage = 0;
+let lastCpuTimes: { idle: number; total: number } | null = null;
+let cpuHistory: number[] = [];
+
+function sampleCpuUsage() {
+  try {
     const cpus = os.cpus();
     let idle = 0;
     let total = 0;
@@ -68,42 +72,56 @@ function getCpuUsage(): Promise<number> {
       idle += cpu.times.idle;
     }
 
-    if (!lastCpuInfo) {
-      lastCpuInfo = { idle, total };
-      resolve(Math.min(100, Math.max(0, Math.round(os.loadavg()[0] * 10))));
-      return;
+    if (lastCpuTimes) {
+      const idleDiff = idle - lastCpuTimes.idle;
+      const totalDiff = total - lastCpuTimes.total;
+
+      if (totalDiff > 0) {
+        const instantUsage = 100 - (100 * idleDiff) / totalDiff;
+        const clampedInstant = Math.min(100, Math.max(0, instantUsage));
+
+        // Exponential smoothing (70% instant + 30% smoothed) to eliminate erratic jitter
+        currentCpuUsage = currentCpuUsage === 0
+          ? Math.round(clampedInstant)
+          : Math.round(0.7 * clampedInstant + 0.3 * currentCpuUsage);
+
+        cpuHistory.push(currentCpuUsage);
+        if (cpuHistory.length > 60) cpuHistory.shift();
+      }
     }
 
-    const idleDiff = idle - lastCpuInfo.idle;
-    const totalDiff = total - lastCpuInfo.total;
-    lastCpuInfo = { idle, total };
-
-    if (totalDiff <= 0) {
-      resolve(0);
-      return;
-    }
-
-    const usage = 100 - (100 * idleDiff) / totalDiff;
-    resolve(Math.round(Math.min(100, Math.max(0, usage))));
-  });
+    lastCpuTimes = { idle, total };
+  } catch (e) {}
 }
 
-// Disk Usage
+// Run CPU sampler every 1000ms consistently
+setInterval(sampleCpuUsage, 1000);
+sampleCpuUsage();
+
+// Disk Usage using native cross-platform fs.promises.statfs
 async function getDiskUsage() {
+  try {
+    const rootPath = os.platform() === 'win32' ? 'C:/' : '/';
+    if (fs.promises && typeof fs.promises.statfs === 'function') {
+      const stats = await fs.promises.statfs(rootPath);
+      const totalBytes = stats.bsize * stats.blocks;
+      const freeBytes = stats.bsize * stats.bavail;
+      const usedBytes = Math.max(0, totalBytes - freeBytes);
+      const usedPercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
+      return { totalBytes, usedBytes, freeBytes, usedPercent };
+    }
+  } catch (e) {}
+
+  // Fallback to df for Linux/macOS
   try {
     const { stdout } = await execAsync('df -k /');
     const lines = stdout.trim().split('\n');
     if (lines.length >= 2) {
       const parts = lines[1].replace(/\s+/g, ' ').split(' ');
-      const totalK = parseInt(parts[1], 10) || 0;
-      const usedK = parseInt(parts[2], 10) || 0;
-      const freeK = parseInt(parts[3], 10) || 0;
-
-      const totalBytes = totalK * 1024;
-      const usedBytes = usedK * 1024;
-      const freeBytes = freeK * 1024;
+      const totalBytes = (parseInt(parts[1], 10) || 0) * 1024;
+      const usedBytes = (parseInt(parts[2], 10) || 0) * 1024;
+      const freeBytes = (parseInt(parts[3], 10) || 0) * 1024;
       const usedPercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
-
       return { totalBytes, usedBytes, freeBytes, usedPercent };
     }
   } catch (e) {}
@@ -163,19 +181,31 @@ export async function getSystemStats(): Promise<SystemStats> {
   const usedMem = totalMem - freeMem;
   const memUsedPercent = Math.round((usedMem / totalMem) * 100);
 
-  const cpuUsagePercent = await getCpuUsage();
   const disk = await getDiskUsage();
+
+  // Load avg simulation for Windows if os.loadavg() is [0, 0, 0]
+  let loadAvg = os.loadavg().map((v) => parseFloat(v.toFixed(2)));
+  if (os.platform() === 'win32' && loadAvg[0] === 0 && cpuHistory.length > 0) {
+    const avgRecent = cpuHistory.slice(-5).reduce((a, b) => a + b, 0) / Math.min(cpuHistory.length, 5);
+    const avgMedium = cpuHistory.reduce((a, b) => a + b, 0) / cpuHistory.length;
+    const numCores = os.cpus().length || 1;
+    loadAvg = [
+      parseFloat(((avgRecent / 100) * numCores).toFixed(2)),
+      parseFloat(((avgMedium / 100) * numCores).toFixed(2)),
+      parseFloat(((avgMedium / 100) * numCores * 0.95).toFixed(2)),
+    ];
+  }
 
   return {
     hostname: os.hostname(),
-    platform: os.platform() === 'darwin' ? 'macOS' : os.platform() === 'linux' ? 'Linux' : os.platform(),
+    platform: os.platform() === 'darwin' ? 'macOS' : os.platform() === 'linux' ? 'Linux' : os.platform() === 'win32' ? 'Windows Server' : os.platform(),
     arch: os.arch(),
     uptimeSeconds: Math.floor(os.uptime()),
     cpu: {
       cores: os.cpus().length,
       model: os.cpus()[0]?.model || 'CPU',
-      usagePercent: cpuUsagePercent,
-      loadAvg: os.loadavg().map((v) => parseFloat(v.toFixed(2))),
+      usagePercent: currentCpuUsage,
+      loadAvg,
     },
     memory: {
       totalBytes: totalMem,

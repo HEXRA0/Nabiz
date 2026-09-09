@@ -17,6 +17,7 @@ export interface Project {
   logPath?: string;
   directory?: string;
   isCustom?: boolean;
+  isSelf?: boolean;
 }
 
 export interface SystemStats {
