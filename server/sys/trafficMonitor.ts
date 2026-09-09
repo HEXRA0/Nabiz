@@ -118,7 +118,7 @@ const minuteBuckets = new Map<string, MinuteBucket>();
 const PROJECT_PORTS: Record<string, number> = {
   nabiz: 3001,
   odak: 4173,
-  thedemir: 80,
+  thedemir: 8080,
 };
 
 // Active connections count cache

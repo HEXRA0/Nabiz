@@ -450,7 +450,7 @@ export async function getAllProjects(): Promise<ProjectProcess[]> {
   // Default core projects definition (odak, thedemir, nabız)
   const coreProjects: Array<{ name: string; port: number; directory: string; isSelf?: boolean }> = [
     { name: 'odak', port: 4173, directory: 'C:/Projects/odak' },
-    { name: 'thedemir', port: 80, directory: 'C:/Projects/thedemir' },
+    { name: 'thedemir', port: 8080, directory: 'C:/Projects/thedemir' },
     { name: 'nabız', port: 3001, directory: 'C:/Projects/Nabiz', isSelf: true },
   ];
 
@@ -591,15 +591,21 @@ export async function executeProjectAction(project: ProjectProcess, action: 'sta
     } else if (projName === 'thedemir') {
       if (action === 'stop' || action === 'restart') {
         if (isWin) {
-          await execAsync('powershell -Command "Stop-Service Caddy -ErrorAction SilentlyContinue; Stop-Process -Name caddy -Force -ErrorAction SilentlyContinue"').catch(() => {});
+          await execAsync(`powershell -Command "schtasks /end /tn 'ThedemirService' -ErrorAction SilentlyContinue; $p = (Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force }"`).catch(() => {});
+        } else if (project.pid) {
+          await execAsync(`kill -9 ${project.pid}`).catch(() => {});
         }
       }
       if (action === 'start' || action === 'restart') {
         if (isWin) {
-          await execAsync('powershell -Command "Start-Service Caddy -ErrorAction SilentlyContinue; if (!(Get-Process caddy -ErrorAction SilentlyContinue)) { Start-Process \'C:\\Caddy\\caddy.exe\' -ArgumentList \'run --config C:\\Caddy\\Caddyfile\' -WindowStyle Hidden }"');
+          await execAsync('powershell -Command "schtasks /run /tn \'ThedemirService\'"').catch(() => {
+            exec('C:\\Projects\\thedemir\\start.bat', { cwd: 'C:\\Projects\\thedemir' });
+          });
+        } else {
+          exec('node server.mjs', { cwd: project.directory || '/Projects/thedemir', env: { ...process.env, PORT: '8080', HOST: '0.0.0.0' } });
         }
       }
-      result = { success: true, message: `Thedemir (Caddy) ${action === 'start' ? 'başlatıldı' : action === 'stop' ? 'durduruldu' : 'yeniden başlatıldı'}.` };
+      result = { success: true, message: `Thedemir projesi ${action === 'start' ? 'başlatıldı' : action === 'stop' ? 'durduruldu' : 'yeniden başlatıldı'}.` };
     } else if (projName === 'nabiz' || projName === 'nabız') {
       if (action === 'stop') {
         if (isWin) {
